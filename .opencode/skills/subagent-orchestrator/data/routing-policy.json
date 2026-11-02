@@ -26,8 +26,24 @@
         "review"
       ],
       "reason": "Local policy: Claude models are for reading and reasoning only. Too expensive for implementation or test work."
+    },
+    {
+      "match": "gemini-*flash*",
+      "allow_roles": [
+        "research"
+      ],
+      "reason": "Local policy: Gemini Flash is the web-research target, not a coding model."
     }
   ],
+  "web_research": {
+    "models": [
+      "antigravity:gemini-3.8-flash"
+    ],
+    "web_only": [
+      "antigravity:gemini-3.8-flash"
+    ],
+    "note": "Local policy: all delegated web research (search or fetch) uses Gemini Flash. Select with --web; web_only models are never picked for non-web units."
+  },
   "models": {
     "opencode:opencode-go/deepseek-v4.1-flash": {
       "cost_tier": 1,
