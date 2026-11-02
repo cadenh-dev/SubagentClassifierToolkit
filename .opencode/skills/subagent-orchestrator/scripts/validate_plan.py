@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Validate a subagent delegation plan.
+
+This is a small, dependency-free checker for `assets/plan.schema.json`. It
+catches the mistakes that cost the most: duplicate units, missing dependencies,
+cycles, overlapping shared writes, and integration orders that violate the DAG.
+
+Usage:
+  validate_plan.py --plan plan.json
+  validate_plan.py --plan plan.json --json
+  validate_plan.py --plan plan.json --strict
+
+Exit codes:
+  0  valid (warnings allowed)
+  1  invalid, or warnings with --strict
+  2  bad input
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+ROLES = {"research", "design", "implementation", "test", "review", "general"}
+ISOLATION = {"shared", "worktree"}
+MODES = {"async", "wait"}
+
+
+def load_plan(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print(f"file not found: {path}", file=sys.stderr)
+        raise SystemExit(2)
+    except json.JSONDecodeError as e:
+        print(f"invalid JSON in {path}: {e}", file=sys.stderr)
+        raise SystemExit(2)
+    if not isinstance(data, dict):
+        print("plan must be a JSON object", file=sys.stderr)
+        raise SystemExit(2)
+    return data
+
+
+def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    goal = plan.get("goal")
+    if not isinstance(goal, str) or not goal.strip():
+        errors.append("goal must be a non-empty string")
+
+    mode = plan.get("mode")
+    if mode not in {"single", "delegated"}:
+        errors.append("mode must be 'single' or 'delegated'")
+
+    units = plan.get("units")
+    if not isinstance(units, list):
+        errors.append("units must be an array")
+        units = []
+
+    if mode == "delegated" and not units:
+        errors.append("delegated mode requires at least one unit")
+    if mode == "single" and units:
+        warnings.append("mode is 'single' but units are present")
+
+    ids: list[str] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for i, unit in enumerate(units):
+        here = f"units[{i}]"
+        if not isinstance(unit, dict):
+            errors.append(f"{here} must be an object")
+            continue
+
+        uid = unit.get("id")
+        if not isinstance(uid, str) or not uid:
+            errors.append(f"{here}.id must be a non-empty string")
+            continue
+        if uid in by_id:
+            errors.append(f"duplicate unit id: {uid}")
+            continue
+        ids.append(uid)
+        by_id[uid] = unit
+
+        title = unit.get("title")
+        if not isinstance(title, str) or not title.strip():
+            errors.append(f"{uid}: title must be a non-empty string")
+
+        role = unit.get("role")
+        if role not in ROLES:
+            errors.append(f"{uid}: role must be one of {sorted(ROLES)}")
+
+        objective = unit.get("objective")
+        if not isinstance(objective, str) or not objective.strip():
+            errors.append(f"{uid}: objective must be a non-empty string")
+
+        depends = unit.get("depends_on")
+        if not isinstance(depends, list):
+            errors.append(f"{uid}: depends_on must be an array")
+        else:
+            for dep in depends:
+                if not isinstance(dep, str):
+                    errors.append(f"{uid}: depends_on entries must be strings")
+
+        isolation = unit.get("isolation")
+        if isolation not in ISOLATION:
+            errors.append(f"{uid}: isolation must be 'shared' or 'worktree'")
+
+        unit_mode = unit.get("mode")
+        if unit_mode not in MODES:
+            errors.append(f"{uid}: mode must be 'async' or 'wait'")
+
+        if mode == "delegated":
+            target = unit.get("target")
+            if not isinstance(target, dict):
+                errors.append(f"{uid}: delegated units need a target object")
+            else:
+                pid = target.get("providerInstanceId")
+                mid = target.get("model")
+                if not isinstance(pid, str) or not pid.strip():
+                    errors.append(f"{uid}: target.providerInstanceId is required")
+                if not isinstance(mid, str) or not mid.strip():
+                    errors.append(f"{uid}: target.model is required")
+                options = target.get("options")
+                if options is not None and not isinstance(options, (dict, list)):
+                    errors.append(f"{uid}: target.options must be an object or array")
+                if isinstance(options, list):
+                    for j, option in enumerate(options):
+                        if not isinstance(option, dict) or "id" not in option or "value" not in option:
+                            errors.append(f"{uid}: target.options[{j}] needs id and value")
+
+        write_scope = unit.get("write_scope", [])
+        if not isinstance(write_scope, list):
+            errors.append(f"{uid}: write_scope must be an array")
+        elif role in {"research", "review", "design"} and write_scope:
+            warnings.append(f"{uid}: {role} unit declares write_scope; confirm it needs writes")
+
+        acceptance = unit.get("acceptance")
+        if not isinstance(acceptance, list) or not acceptance:
+            errors.append(f"{uid}: acceptance must contain at least one criterion")
+        elif any(not isinstance(a, str) or not a.strip() for a in acceptance):
+            errors.append(f"{uid}: acceptance entries must be non-empty strings")
+
+        brief = unit.get("brief")
+        if not isinstance(brief, str) or not brief.strip():
+            errors.append(f"{uid}: brief must be a non-empty string")
+
+        deliverable = unit.get("deliverable")
+        if not isinstance(deliverable, str) or not deliverable.strip():
+            errors.append(f"{uid}: deliverable must be a non-empty string")
+
+        if role == "implementation" and not write_scope and isolation == "worktree":
+            warnings.append(f"{uid}: implementation worktree has no write_scope")
+
+        if role == "review" and isolation == "worktree":
+            warnings.append(f"{uid}: review unit uses a worktree; shared is usually enough")
+
+    # Dependencies.
+    for uid, unit in by_id.items():
+        deps = unit.get("depends_on", [])
+        if not isinstance(deps, list):
+            continue
+        for dep in deps:
+            if dep == uid:
+                errors.append(f"{uid}: depends on itself")
+            elif dep not in by_id:
+                errors.append(f"{uid}: unknown dependency {dep!r}")
+
+    # Cycle detection / topological order.
+    done: set[str] = set()
+    remaining = set(by_id)
+    while remaining:
+        ready = {
+            uid
+            for uid in remaining
+            if all(dep in done for dep in by_id[uid].get("depends_on", []) if isinstance(dep, str))
+        }
+        if not ready:
+            errors.append(f"dependency cycle among: {', '.join(sorted(remaining))}")
+            break
+        done.update(ready)
+        remaining -= ready
+
+    # Integration.
+    integration = plan.get("integration")
+    if not isinstance(integration, dict):
+        errors.append("integration must be an object")
+    else:
+        order = integration.get("order")
+        if not isinstance(order, list):
+            errors.append("integration.order must be an array")
+            order = []
+        if len(order) != len(set(order)):
+            errors.append("integration.order contains duplicates")
+        for uid in order:
+            if not isinstance(uid, str):
+                errors.append("integration.order entries must be strings")
+            elif uid not in by_id:
+                errors.append(f"integration.order references unknown unit {uid!r}")
+        missing = [uid for uid in ids if uid not in order]
+        if missing:
+            errors.append(f"integration.order is missing: {', '.join(missing)}")
+
+        seen: set[str] = set()
+        for uid in order:
+            if uid not in by_id:
+                continue
+            for dep in by_id[uid].get("depends_on", []):
+                if dep not in seen:
+                    errors.append(f"integration.order puts {uid} before its dependency {dep}")
+            seen.add(uid)
+
+        deps = integration.get("tests")
+        if not isinstance(deps, list):
+            errors.append("integration.tests must be an array")
+        review = integration.get("review")
+        if not isinstance(review, bool):
+            errors.append("integration.review must be a boolean")
+
+        implementations = [u for u in units if isinstance(u, dict) and u.get("role") == "implementation"]
+        shared_impl = [u.get("id") for u in implementations if u.get("isolation") == "shared"]
+        if len(shared_impl) > 1:
+            warnings.append(
+                "multiple implementation units use shared isolation: "
+                + ", ".join(str(x) for x in shared_impl)
+                + "; use worktrees or sequence them"
+            )
+
+    return errors, warnings
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--plan", required=True)
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--strict", action="store_true", help="treat warnings as errors")
+    args = ap.parse_args()
+
+    plan = load_plan(Path(args.plan))
+    errors, warnings = validate(plan)
+    ok = not errors and not (args.strict and warnings)
+
+    result = {"ok": ok, "errors": errors, "warnings": warnings}
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        if ok:
+            print(f"OK {len(plan.get('units', []))} units")
+        else:
+            print("INVALID")
+        for error in errors:
+            print(f"  error: {error}")
+        for warning in warnings:
+            print(f"  warning: {warning}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
