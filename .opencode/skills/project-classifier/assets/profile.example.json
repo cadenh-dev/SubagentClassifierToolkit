@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-01T00:00:00+00:00",
+  "root": "example-app",
+  "kind": "web",
+  "primary_language": "python",
+  "ambiguous": true,
+  "languages": [
+    {
+      "name": "python",
+      "files": 42,
+      "examples": ["api/app/main.py", "api/tests/test_health.py"],
+      "manifests": ["pyproject.toml"],
+      "frameworks": ["FastAPI", "pytest"],
+      "runtime_available": true,
+      "runtime_path": "/usr/bin/python3",
+      "confidence": "high"
+    },
+    {
+      "name": "java",
+      "files": 18,
+      "examples": ["worker/src/main/java/com/example/Worker.java"],
+      "manifests": ["pom.xml"],
+      "frameworks": ["Spring Boot", "JUnit"],
+      "runtime_available": false,
+      "runtime_path": null,
+      "confidence": "high"
+    }
+  ],
+  "frameworks": [
+    {"name": "FastAPI", "language": "python", "evidence": ["pyproject.toml"], "confidence": "high"},
+    {"name": "Spring Boot", "language": "java", "evidence": ["pom.xml"], "confidence": "high"}
+  ],
+  "tools": [
+    {"name": "ffmpeg", "evidence": ["assets/intro.mp4"], "available": true, "path": "/usr/bin/ffmpeg", "note": "Audio/video probe, transcode, encode"}
+  ],
+  "commands": [
+    {"command": "python3 -m pytest", "source": "pytest dependency"},
+    {"command": "mvn test", "source": "Maven project"}
+  ],
+  "warnings": ["java is used by the project but its runtime is not on PATH"],
+  "scan": {"files": 312, "truncated": false}
+}
