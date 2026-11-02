@@ -1,6 +1,6 @@
 ---
 name: project-classifier
-description: Inspect a repository, detect its real languages, frameworks, engines, build tools, and commands, and generate a project-local tool-router skill. Use when onboarding a repo, resolving Python vs Java, Blender vs Godot, choosing a test/build command, or refreshing a project classifier after a stack change.
+description: Inspect a repository, detect its real languages, frameworks, engines, build tools, and commands, and generate a project-local tool-router skill. Use when onboarding a repo, resolving competing toolchain candidates, choosing a test/build command, or refreshing a project classifier after a stack change.
 ---
 
 # Project Classifier
@@ -18,8 +18,8 @@ The output is a generated skill at:
 
 The generated router answers questions like:
 
-- Is this task Python or Java?
-- Is this Blender or Godot work?
+- Which detected language or toolchain owns this task?
+- Which engine or build tool applies?
 - Which test, build, and package-manager commands apply?
 - Which manifest or source path is the evidence?
 
@@ -27,7 +27,7 @@ The generated router answers questions like:
 
 - Onboarding a new repository.
 - A polyglot repo where the root language is misleading.
-- Choosing between two real options, such as Python vs Java or Blender vs Godot.
+- Choosing between two or more real toolchain candidates.
 - Refreshing a project router after adding a service, engine, or build system.
 - Giving a subagent a self-contained toolchain handoff.
 
@@ -41,8 +41,7 @@ Check the repository root, manifests, and existing generated router:
 
 ```bash
 git status --short
-find . -maxdepth 2 -name 'pyproject.toml' -o -name 'pom.xml' -o -name 'package.json' \
-  -o -name 'project.godot' -o -name '*.blend' -o -name 'Cargo.toml' -o -name 'go.mod'
+# The builder scans manifests and source files; no manual extension list is required.
 ```
 
 Do not read secrets, `.env` files, credential stores, or private keys.
@@ -66,7 +65,7 @@ Review:
 Ask the user when:
 
 - two or more languages have substantial file counts,
-- both Blender and Godot are present and the task could use either,
+- two or more engines or toolchains could produce the requested artifact,
 - the primary language comes from one file with no manifest,
 - the project uses a runtime that is not installed.
 
@@ -90,7 +89,7 @@ Check:
 
 - the frontmatter `name` matches the directory,
 - the language table matches the manifests,
-- the tie-breakers make sense for this project,
+- the routing rules make sense for this project,
 - commands are real (especially `make test` and `composer test`),
 - warnings about missing runtimes are visible,
 - no secret values or private paths leaked into the evidence file.
@@ -113,10 +112,9 @@ PY
 
 Then test 3–5 representative tasks:
 
-- a Python-only change,
-- a Java-only change,
+- a change in each detected language,
 - a shared build/test task,
-- a Blender or Godot task if applicable,
+- a task for each detected engine or tool,
 - an ambiguous path.
 
 The generated skill should route by path and evidence, not by model preference.
@@ -133,10 +131,10 @@ Commit the generated skill with the project. Refresh after:
 ## Rules
 
 - **Evidence over vibes.** File counts and manifests decide; model preference does not.
-- **Project use is not installation.** A repo can use Java while `java` is missing from PATH. Keep those facts separate.
+- **Project use is not installation.** A repo can use a language or engine while its runtime is missing from PATH. Keep those facts separate.
 - **Do not introduce a stack.** The generated router describes what exists; it does not authorize a new language or engine.
-- **Route by path, not root.** In a polyglot repo, "the project is Python" is usually false. Use the task's module.
-- **Blender vs Godot is an output question.** Blender is offline 3D/blockout/render; Godot is runtime/playable/parallax. If the output is unclear, ask.
+- **Route by path, not root.** In a polyglot repo, "the project is <one language>" is usually false. Use the task's module.
+- **Competing tools are an output question.** Choose the tool that produces the requested artifact; if two tools could, ask which output is required.
 - **Keep generated evidence intact.** Hand-edited counts drift immediately.
 - **Do not leak secrets.** Never scan `.env`, credential files, or private keys as "evidence."
 
@@ -154,10 +152,10 @@ subagent-orchestrator -> which provider / model / isolation
 Pass the generated handoff into the subagent brief:
 
 ```text
-Toolchain: Python 3.12, pytest, ruff
-Evidence: pyproject.toml, src/api/**
-Command: python3 -m pytest
-Do not switch to Java or add a new framework.
+Toolchain: <detected language/tool>, <detected commands>
+Evidence: <manifest/path>
+Command: <detected test/build command>
+Do not switch stacks or add a new framework.
 ```
 
 ## Files

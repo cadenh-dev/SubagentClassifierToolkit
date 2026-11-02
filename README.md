@@ -49,7 +49,7 @@ Ask for the outcome, not the mechanism:
 - `Ignore cost and use the strongest available model for this migration.`
 - `Route only: which target should handle a multi-file security review?`
 - `Generate a project router for this repo.`
-- `Should this task use Blender or Godot? Build a classifier for this project.`
+- `Build a project classifier for this repo.`
 
 The skill will first decide whether delegation is justified. If it is not, it will do the work directly.
 
@@ -98,7 +98,7 @@ If no eligible target fits, the selector returns `BUDGET_EXCEEDED` instead of la
 
 ## Project classifier
 
-The second skill builds a **project-local tool router** from repository evidence. It answers Python vs Java, Blender vs Godot, Maven vs Gradle, npm vs pnpm, and "which test command?" without guessing from the model's preferences.
+The second skill builds a **project-local tool router** from repository evidence. It answers competing language/engine/tool questions and "which test command?" without guessing from the model's preferences.
 
 ```bash
 python3 .opencode/skills/project-classifier/scripts/build_project_classifier.py --root . --dry-run
@@ -111,7 +111,7 @@ The generated skill lives inside the project and includes:
 - language/file/manifest/framework evidence,
 - installed-vs-used tool distinctions,
 - build/test commands,
-- tie-breakers for Python vs Java and Blender vs Godot,
+- generic routing rules for multiple languages, engines, and build tools,
 - a machine-readable `data/project-profile.json`,
 - an evidence file.
 
