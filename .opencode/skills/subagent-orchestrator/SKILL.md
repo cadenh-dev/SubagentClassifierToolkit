@@ -21,6 +21,20 @@ The default is **do it yourself**. Delegation is a tool, not a ritual.
 - **No nested delegation by default.** A child does the work itself unless the brief explicitly allows subagents.
 - **Do not poll.** A completed delegate wakes the parent. Use `task_status` when woken; do not sleep or loop.
 
+## Local policy (this machine)
+
+These override the generic routing guidance below.
+
+- **Claude models are read-and-reason only.** Any `claude-*` model (including `cursor:claude-opus-5-5`, `claudeAgent:*`) may be used for `research`, `design`, and `review` units only. Never route `implementation` or `test` work to Claude — it is too expensive for coding.
+- Coding routes to non-Claude targets: `opencode:opencode-go/deepseek-v4.1-flash`, `codex:gpt-6-*`, `cursor:composer-2.5`, `cursor:grok-*`.
+- If no eligible non-Claude target meets the required depth, return `UNAVAILABLE` or ask. Do not silently fall back to Claude for code.
+- Enforced by `data/routing-policy.json` → `role_restrictions` and checked in `scripts/select_target.py` (`role_allowed`).
+- **One frame, one call; one unit, one brief.** A subagent gets a self-contained task, not the parent's entire history.
+- **Worktree for writes, shared for read-only.** Parallel implementations never share a checkout.
+- **Verify the work.** A child's summary is a claim. Read the diff, run the tests, and check the acceptance criteria.
+- **No nested delegation by default.** A child does the work itself unless the brief explicitly allows subagents.
+- **Do not poll.** A completed delegate wakes the parent. Use `task_status` when woken; do not sleep or loop.
+
 ## Phase 1 — Decide whether to delegate
 
 Delegate only when at least one is true:

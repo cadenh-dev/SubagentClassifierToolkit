@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -228,6 +229,22 @@ def usage_remaining(usage: dict[str, Any], provider: str, model: str) -> tuple[f
     return None, None
 
 
+def role_allowed(policy: dict[str, Any], role: str, key: str, model_id: str) -> tuple[bool, str | None]:
+    """Enforce policy.role_restrictions (for example, Claude read-only)."""
+    for rule in policy.get("role_restrictions") or []:
+        if not isinstance(rule, dict):
+            continue
+        pattern = str(rule.get("match") or "").lower()
+        if not pattern:
+            continue
+        if not (fnmatch(model_id.lower(), pattern) or fnmatch(key.lower(), pattern)):
+            continue
+        allow = {str(r).lower() for r in rule.get("allow_roles") or []}
+        if allow and role.lower() not in allow:
+            return False, rule.get("reason") or f"{model_id} is not allowed for role {role}"
+    return True, None
+
+
 def build_candidates(caps: dict[str, Any], policy: dict[str, Any], args: argparse.Namespace) -> list[dict[str, Any]]:
     domain = args.domain or ROLE_DOMAIN[args.role]
     excludes = set(args.exclude or [])
@@ -254,6 +271,9 @@ def build_candidates(caps: dict[str, Any], policy: dict[str, Any], args: argpars
                 continue
             key = f"{pid}:{mid}"
             if key in excludes or mid in excludes:
+                continue
+            allowed, _reason = role_allowed(policy, args.role, key, mid)
+            if not allowed:
                 continue
 
             score, cost, known, context = score_for(policy, key, domain)

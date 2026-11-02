@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-11-01",
+  "updated": "2026-11-02",
   "source": "Starter routing policy. These are cost tiers and reasoning heuristics, not published benchmarks. Edit them to match your own measurements.",
   "budget": {
     "unit": "tokens",
@@ -17,6 +17,17 @@
     "cost_tier": 3,
     "reasoning": 2
   },
+  "role_restrictions": [
+    {
+      "match": "claude-*",
+      "allow_roles": [
+        "research",
+        "design",
+        "review"
+      ],
+      "reason": "Local policy: Claude models are for reading and reasoning only. Too expensive for implementation or test work."
+    }
+  ],
   "models": {
     "opencode:opencode-go/deepseek-v4.1-flash": {
       "cost_tier": 1,
