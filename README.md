@@ -74,14 +74,36 @@ No Markdown, JSON, backticks, or explanation. The canonical form is:
 
 Preserve `/`, `.`, `-`, `_`, `:`, `@`, and `#`; they are part of real model IDs.
 
+## Budget and usage left
+
+T3 does not expose a uniform "remaining usage" API for every provider. The skill therefore supports a user-maintained snapshot:
+
+```bash
+cp .opencode/skills/subagent-orchestrator/data/usage.example.json \
+  .opencode/skills/subagent-orchestrator/data/usage.json
+# edit remaining units from your provider/T3 usage screen
+```
+
+Then route with a budget check:
+
+```bash
+python3 .opencode/skills/subagent-orchestrator/scripts/select_target.py \
+  --capabilities caps.json \
+  --usage .opencode/skills/subagent-orchestrator/data/usage.json \
+  --role implementation --depth 4 --estimate-units 220000
+```
+
+If no eligible target fits, the selector returns `BUDGET_EXCEEDED` instead of launching a task that cannot finish. `IGNORE_COST=true` still respects the remaining-usage check. Unknown providers are not treated as unlimited.
+
 ## What is in the box
 
 ```text
 .opencode/skills/subagent-orchestrator/
 ├── SKILL.md                     # entry point and operating loop
-├── data/routing-policy.json     # editable cost/reasoning tiers
+├── data/routing-policy.json     # editable cost/reasoning tiers and budget estimates
+├── data/usage.example.json      # user-maintained remaining-usage snapshot
 ├── references/
-│   ├── routing.md               # task depth, domains, model selection
+│   ├── routing.md               # task depth, domains, model selection, budget
 │   ├── briefs.md                # role-specific brief templates
 │   └── operations.md            # launch, supervise, verify, integrate
 ├── assets/
@@ -99,13 +121,14 @@ docs/
 ## Design principles
 
 1. **Live capabilities beat cached registries.** T3 already exposes `orchestrator_capabilities`; the skill reads it instead of pretending to fetch model prices and benchmarks in the background.
-2. **Availability before cost.** A disabled provider or rate-limited model is not a candidate, regardless of `IGNORE_COST`.
+2. **Availability and budget before cost.** A disabled provider, a rate-limited model, or a unit that does not fit the remaining usage is not a candidate.
 3. **Cheapest capable by default.** `IGNORE_COST=false` prefers the inherited target, then the lowest cost tier that meets the reasoning threshold.
-4. **Max reasoning is explicit.** `IGNORE_COST=true` raises the effort and chooses the strongest available target. It does not ignore availability.
-5. **One brief per independent unit.** Each child gets a self-contained task, write scope, acceptance criteria, and reporting contract.
-6. **Worktree for writes, shared for read-only.** Parallel implementation children do not share a checkout.
-7. **Verify, don't trust.** A child's summary is a claim; the parent reads the diff and runs the checks.
-8. **No nested delegation by default.** A child does the work itself unless the brief explicitly allows otherwise.
+4. **Budget before launch.** If a remaining-usage snapshot is available, a unit that does not fit is not launched.
+5. **Max reasoning is explicit.** `IGNORE_COST=true` raises the effort and chooses the strongest available target. It does not ignore availability or remaining usage.
+6. **One brief per independent unit.** Each child gets a self-contained task, write scope, acceptance criteria, and reporting contract.
+7. **Worktree for writes, shared for read-only.** Parallel implementation children do not share a checkout.
+8. **Verify, don't trust.** A child's summary is a claim; the parent reads the diff and runs the checks.
+9. **No nested delegation by default.** A child does the work itself unless the brief explicitly allows otherwise.
 
 ## Requirements
 
