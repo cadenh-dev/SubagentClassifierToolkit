@@ -137,6 +137,7 @@ Before accepting a unit:
 - [ ] Commit message and branch name are sensible.
 - [ ] PR base is correct and checks are passing or explained.
 - [ ] Risks and follow-ups are recorded.
+- [ ] Remaining usage updated if the provider reports actual usage; otherwise the snapshot is marked stale.
 
 Before declaring the whole task done:
 

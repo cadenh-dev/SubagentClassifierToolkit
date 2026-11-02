@@ -2,6 +2,17 @@
   "version": 1,
   "updated": "2026-11-01",
   "source": "Starter routing policy. These are cost tiers and reasoning heuristics, not published benchmarks. Edit them to match your own measurements.",
+  "budget": {
+    "unit": "tokens",
+    "estimated_units_by_depth": {
+      "1": 2500,
+      "2": 12000,
+      "3": 50000,
+      "4": 150000,
+      "5": 400000
+    },
+    "note": "Rough total-token estimates for a typical unit. Override with --estimate-units when the task is unusually large or small."
+  },
   "defaults": {
     "cost_tier": 3,
     "reasoning": 2
