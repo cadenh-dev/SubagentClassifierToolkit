@@ -1,0 +1,110 @@
+{
+  "goal": "Refactor authentication across the API and web packages, then review the migration.",
+  "mode": "delegated",
+  "ignore_cost": false,
+  "units": [
+    {
+      "id": "api-auth",
+      "title": "API auth refactor",
+      "role": "implementation",
+      "objective": "Move refresh-token rotation into the auth service without changing the public API contract.",
+      "depends_on": [],
+      "isolation": "worktree",
+      "mode": "async",
+      "target": {
+        "providerInstanceId": "codex",
+        "model": "gpt-6.1-sol",
+        "options": {
+          "reasoningEffort": "high",
+          "serviceTier": "default"
+        }
+      },
+      "write_scope": [
+        "services/auth/**",
+        "tests/auth/**"
+      ],
+      "acceptance": [
+        "A used refresh token cannot be replayed.",
+        "A valid refresh token rotates once and keeps the session alive.",
+        "pnpm test --filter auth passes."
+      ],
+      "commands": [
+        "pnpm test --filter auth"
+      ],
+      "deliverable": "Branch, commit, push, and PR against main.",
+      "brief": "ROLE: implementation\nOBJECTIVE: Move refresh-token rotation into the auth service without changing the public API contract.\n\nCONTEXT\n- Repo /work/app\n- Base branch main at 4f2c1a\n- Read AGENTS.md and services/auth/README.md\n\nWRITE SCOPE\n- services/auth/**\n- tests/auth/**\n\nDO NOT TOUCH\n- web/**, infra/**, shared/**\n\nACCEPTANCE\n- A used refresh token cannot be replayed.\n- A valid refresh token rotates once and keeps the session alive.\n- pnpm test --filter auth passes.\n\nDELIVERABLE\n- Branch auth-refresh-rotation, commit, push, PR against main.\n- Report the PR URL, head SHA, and check status."
+    },
+    {
+      "id": "web-auth",
+      "title": "Web auth client",
+      "role": "implementation",
+      "objective": "Update the web client to handle refresh-token rotation and one retry after a 401.",
+      "depends_on": [],
+      "isolation": "worktree",
+      "mode": "async",
+      "target": {
+        "providerInstanceId": "cursor",
+        "model": "composer-2.5",
+        "options": {
+          "fastMode": true
+        }
+      },
+      "write_scope": [
+        "web/auth/**",
+        "web/tests/auth/**"
+      ],
+      "acceptance": [
+        "A 401 triggers one refresh attempt and retries the request.",
+        "A failed refresh logs the user out.",
+        "pnpm test --filter web-auth passes."
+      ],
+      "commands": [
+        "pnpm test --filter web-auth"
+      ],
+      "deliverable": "Branch, commit, push, and PR against main.",
+      "brief": "ROLE: implementation\nOBJECTIVE: Update the web client to handle refresh-token rotation and one retry after a 401.\n\nWRITE SCOPE\n- web/auth/**\n- web/tests/auth/**\n\nDO NOT TOUCH\n- services/**, infra/**\n\nACCEPTANCE\n- A 401 triggers one refresh attempt and retries the request.\n- A failed refresh logs the user out.\n- pnpm test --filter web-auth passes.\n\nDELIVERABLE\n- Branch web-auth-rotation, commit, push, PR against main.\n- Report the PR URL, head SHA, and check status."
+    },
+    {
+      "id": "migration-review",
+      "title": "Security review",
+      "role": "review",
+      "objective": "Review both auth PRs for replay, expiry, concurrent refresh, and error-path defects.",
+      "depends_on": [
+        "api-auth",
+        "web-auth"
+      ],
+      "isolation": "shared",
+      "mode": "async",
+      "target": {
+        "providerInstanceId": "codex",
+        "model": "gpt-6.1-sol",
+        "options": {
+          "reasoningEffort": "high"
+        }
+      },
+      "write_scope": [],
+      "acceptance": [
+        "Findings are ordered by severity with file:line and concrete fixes.",
+        "Replay, expiry, concurrent refresh, and error paths are explicitly covered.",
+        "No code changes are made."
+      ],
+      "commands": [],
+      "deliverable": "Review memo with findings and a verdict.",
+      "brief": "ROLE: review\nOBJECTIVE: Review both auth PRs for replay, expiry, concurrent refresh, and error-path defects.\n\nINPUTS\n- PRs: <api PR URL> and <web PR URL>\n- Base: main at 4f2c1a\n- Design: docs/auth-rotation.md\n\nWRITE SCOPE: none.\n\nDELIVERABLE\n- Findings by severity with file:line and concrete fixes.\n- If no findings, list what you checked.\n\nRULES\n- Do not edit the branches.\n- Do not trust the PR descriptions; read the diffs."
+    }
+  ],
+  "integration": {
+    "order": [
+      "api-auth",
+      "web-auth",
+      "migration-review"
+    ],
+    "tests": [
+      "pnpm test",
+      "pnpm lint"
+    ],
+    "review": true,
+    "notes": "Merge the API change first; the web client can tolerate a rotating token after its own merge."
+  },
+  "fallback": "If no implementation target meets the depth, do the smaller unit in the parent and keep the independent unit delegated."
+}

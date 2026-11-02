@@ -1,0 +1,118 @@
+{
+  "providers": [
+    {
+      "providerInstanceId": "codex",
+      "driverKind": "codex",
+      "displayName": "Codex",
+      "canRunChildTask": true,
+      "canRunCrossProviderChildTask": true,
+      "constraints": [],
+      "models": [
+        {
+          "id": "gpt-6.1-sol",
+          "options": [
+            {
+              "id": "reasoningEffort",
+              "values": ["low", "medium", "high", "xhigh", "max", "ultra"],
+              "default": "low"
+            },
+            {
+              "id": "serviceTier",
+              "values": ["default", "priority"],
+              "default": "default"
+            }
+          ]
+        },
+        {
+          "id": "gpt-6-luna",
+          "options": [
+            {
+              "id": "reasoningEffort",
+              "values": ["low", "medium", "high", "xhigh", "max"],
+              "default": "medium"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "providerInstanceId": "opencode",
+      "driverKind": "opencode",
+      "displayName": "OpenCode",
+      "canRunChildTask": true,
+      "canRunCrossProviderChildTask": true,
+      "constraints": [],
+      "models": [
+        {
+          "id": "opencode-go/deepseek-v4.1-flash",
+          "options": [
+            {
+              "id": "variant",
+              "values": ["low", "high", "max"]
+            }
+          ]
+        },
+        {
+          "id": "opencode/deepseek-v4.1-flash-free",
+          "options": [
+            {
+              "id": "variant",
+              "values": ["low", "high", "max"],
+              "default": "high"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "providerInstanceId": "antigravity",
+      "driverKind": "antigravity",
+      "displayName": "Antigravity",
+      "canRunChildTask": true,
+      "canRunCrossProviderChildTask": true,
+      "constraints": [],
+      "models": [
+        {
+          "id": "gemini-3.8-flash",
+          "options": [
+            {
+              "id": "thinking_level",
+              "values": ["low", "medium", "high"],
+              "default": "high"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "providerInstanceId": "claudeAgent",
+      "driverKind": "claudeAgent",
+      "displayName": "Claude",
+      "canRunChildTask": false,
+      "canRunCrossProviderChildTask": false,
+      "constraints": ["Provider instance is disabled."],
+      "models": [
+        {
+          "id": "claude-opus-5-5",
+          "options": [
+            {
+              "id": "effort",
+              "values": ["low", "medium", "high", "xhigh", "max"],
+              "default": "medium"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "features": {
+    "appOwnedSubagents": true,
+    "asyncPolling": true,
+    "cancellation": true,
+    "batchThreadCreation": true,
+    "threadManagement": true,
+    "incrementalThreadRead": true,
+    "scheduledTasks": true,
+    "maxBatchThreads": 20
+  }
+}

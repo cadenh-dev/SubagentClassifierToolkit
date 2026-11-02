@@ -1,0 +1,239 @@
+{
+  "version": 1,
+  "updated": "2026-11-01",
+  "source": "Starter routing policy. These are cost tiers and reasoning heuristics, not published benchmarks. Edit them to match your own measurements.",
+  "defaults": {
+    "cost_tier": 3,
+    "reasoning": 2
+  },
+  "models": {
+    "opencode:opencode-go/deepseek-v4.1-flash": {
+      "cost_tier": 1,
+      "reasoning": {
+        "general": 3,
+        "code": 3,
+        "architecture": 2,
+        "research": 3,
+        "review": 2,
+        "test": 3,
+        "docs": 3
+      }
+    },
+    "opencode:opencode/deepseek-v4.1-flash-free": {
+      "cost_tier": 0,
+      "reasoning": {
+        "general": 3,
+        "code": 3,
+        "architecture": 2,
+        "research": 3,
+        "review": 2,
+        "test": 3,
+        "docs": 3
+      }
+    },
+    "codex:gpt-6.1-sol": {
+      "cost_tier": 4,
+      "reasoning": {
+        "general": 5,
+        "code": 5,
+        "architecture": 5,
+        "research": 4,
+        "review": 5,
+        "test": 4,
+        "docs": 4
+      }
+    },
+    "codex:gpt-6-astra": {
+      "cost_tier": 3,
+      "reasoning": {
+        "general": 4,
+        "code": 4,
+        "architecture": 4,
+        "research": 4,
+        "review": 4,
+        "test": 4,
+        "docs": 4
+      }
+    },
+    "codex:gpt-6.1-terra": {
+      "cost_tier": 3,
+      "reasoning": {
+        "general": 4,
+        "code": 4,
+        "architecture": 4,
+        "research": 4,
+        "review": 4,
+        "test": 4,
+        "docs": 4
+      }
+    },
+    "codex:gpt-6-luna": {
+      "cost_tier": 2,
+      "reasoning": {
+        "general": 3,
+        "code": 3,
+        "architecture": 3,
+        "research": 3,
+        "review": 3,
+        "test": 3,
+        "docs": 3
+      }
+    },
+    "claudeAgent:claude-opus-5-5": {
+      "cost_tier": 4,
+      "reasoning": {
+        "general": 5,
+        "code": 5,
+        "architecture": 5,
+        "research": 4,
+        "review": 5,
+        "test": 4,
+        "docs": 4
+      }
+    },
+    "claudeAgent:claude-sonnet-5-5": {
+      "cost_tier": 3,
+      "reasoning": {
+        "general": 4,
+        "code": 4,
+        "architecture": 4,
+        "research": 4,
+        "review": 4,
+        "test": 4,
+        "docs": 4
+      }
+    },
+    "claudeAgent:claude-fable-5-1": {
+      "cost_tier": 3,
+      "reasoning": {
+        "general": 4,
+        "code": 4,
+        "architecture": 4,
+        "research": 4,
+        "review": 3,
+        "test": 3,
+        "docs": 3
+      }
+    },
+    "claudeAgent:claude-haiku-5-5": {
+      "cost_tier": 1,
+      "reasoning": {
+        "general": 2,
+        "code": 2,
+        "architecture": 1,
+        "research": 3,
+        "review": 2,
+        "test": 2,
+        "docs": 3
+      }
+    },
+    "cursor:grok-4.7": {
+      "cost_tier": 3,
+      "reasoning": {
+        "general": 4,
+        "code": 4,
+        "architecture": 4,
+        "research": 4,
+        "review": 3,
+        "test": 3,
+        "docs": 3
+      }
+    },
+    "cursor:grok-4.6": {
+      "cost_tier": 2,
+      "reasoning": {
+        "general": 3,
+        "code": 3,
+        "architecture": 3,
+        "research": 3,
+        "review": 3,
+        "test": 3,
+        "docs": 3
+      }
+    },
+    "cursor:composer-2.5": {
+      "cost_tier": 2,
+      "reasoning": {
+        "general": 3,
+        "code": 4,
+        "architecture": 3,
+        "research": 2,
+        "review": 3,
+        "test": 4,
+        "docs": 3
+      }
+    },
+    "cursor:claude-opus-5-5": {
+      "cost_tier": 4,
+      "reasoning": {
+        "general": 5,
+        "code": 5,
+        "architecture": 5,
+        "research": 4,
+        "review": 5,
+        "test": 4,
+        "docs": 4
+      }
+    },
+    "cursor:claude-opus-5": {
+      "cost_tier": 4,
+      "reasoning": {
+        "general": 5,
+        "code": 5,
+        "architecture": 5,
+        "research": 4,
+        "review": 5,
+        "test": 4,
+        "docs": 4
+      }
+    },
+    "cursor:claude-opus-4-8": {
+      "cost_tier": 3,
+      "reasoning": {
+        "general": 4,
+        "code": 4,
+        "architecture": 4,
+        "research": 4,
+        "review": 4,
+        "test": 4,
+        "docs": 4
+      }
+    },
+    "cursor:gemini-4-argon": {
+      "cost_tier": 2,
+      "reasoning": {
+        "general": 3,
+        "code": 3,
+        "architecture": 3,
+        "research": 3,
+        "review": 3,
+        "test": 3,
+        "docs": 3
+      }
+    },
+    "antigravity:gemini-3.8-flash": {
+      "cost_tier": 1,
+      "reasoning": {
+        "general": 3,
+        "code": 3,
+        "architecture": 3,
+        "research": 3,
+        "review": 2,
+        "test": 3,
+        "docs": 3
+      }
+    },
+    "grok:grok-build": {
+      "cost_tier": 3,
+      "reasoning": {
+        "general": 4,
+        "code": 4,
+        "architecture": 4,
+        "research": 4,
+        "review": 3,
+        "test": 3,
+        "docs": 3
+      }
+    }
+  }
+}
