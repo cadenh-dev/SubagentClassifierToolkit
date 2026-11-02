@@ -16,8 +16,8 @@ Validate unit ids, dependencies, cycles, integration order, acceptance criteria,
 ### 4. Project classifier
 Inspect a repository and generate a project-local tool router. Detects languages, frameworks, engines, build tools, commands, runtimes, and ambiguity:
 
-- Python vs Java
-- Blender vs Godot
+- competing languages
+- competing engines/tools
 - Maven vs Gradle
 - npm vs pnpm vs yarn
 - monorepo/polyglot path routing

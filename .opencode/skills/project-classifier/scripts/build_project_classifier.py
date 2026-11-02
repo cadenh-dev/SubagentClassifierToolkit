@@ -515,7 +515,7 @@ def render_skill(name: str, profile: dict[str, Any], out_dir: Path) -> str:
     lines += [
         "---",
         f"name: {name}",
-        f"description: Route tasks in {root_name} to its detected languages, frameworks, tools, and commands. Generated from repository evidence; use when choosing between Python/Java, Blender/Godot, build systems, test runners, or package managers.",
+        f"description: Route tasks in {root_name} to its detected languages, frameworks, tools, and commands. Generated from repository evidence; use when choosing between competing languages, engines, build systems, test runners, or package managers.",
         "---",
         "",
         f"# {root_name} Tool Router",
@@ -564,19 +564,12 @@ def render_skill(name: str, profile: dict[str, Any], out_dir: Path) -> str:
             ", ".join(tool["evidence"][:3]),
         ]))
 
-    lines += ["", "### Language and engine tie-breakers", ""]
-    languages = {item["name"] for item in profile["languages"]}
-    tools = {tool["name"] for tool in profile["tools"]}
-    if {"python", "java"} <= languages:
-        lines.append("- **Python vs Java:** route by the file path and manifest, not by the repo root. Python lives under Python packages/tests; Java under the Maven/Gradle module. If both are plausible, ask for the module.")
-    if {"blender", "godot"} <= tools:
-        lines.append("- **Blender vs Godot:** use Blender for offline 3D, blockouts, render passes, and asset generation; use Godot for runtime/playable scenes, 2D parallax, and in-engine cameras. If the task is ambiguous, ask which output is required.")
-    elif "blender" in tools:
-        lines.append("- **Blender:** use it for offline 3D, blockouts, render passes, and asset generation. It is not a runtime engine.")
-    elif "godot" in tools:
-        lines.append("- **Godot:** use it for runtime, playable scenes, 2D parallax, and in-engine cameras. It is not an offline renderer.")
+    lines += ["", "### Routing tie-breakers", ""]
     if profile["ambiguous"]:
-        lines.append("- **Polyglot repository:** this project has more than one substantial language. Choose by the task's paths, not by the repository root.")
+        lines.append("- **Multiple substantial languages:** route by the task's path/module, not by the repository root. If the module is unclear, ask.")
+    if len(profile["languages"]) > 1 or len(profile["tools"]) > 1:
+        lines.append("- **Multiple toolchains:** route by the task's path or requested artifact. If two options remain plausible, ask; do not choose from the repository root.")
+    lines.append("- **Evidence over defaults:** a detected tool being present does not mean every task should use it. Use the path and manifest above.")
     if not profile["languages"]:
         lines.append("- **No confident toolchain:** stop and ask before introducing a language or engine.")
 
