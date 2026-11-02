@@ -13,6 +13,7 @@ Usage:
 Output:
   providerInstanceId:model[#option=value,...]
   UNAVAILABLE
+  BUDGET_EXCEEDED
 
 Exit codes:
   0  selected or unavailable
@@ -188,6 +189,45 @@ def canonical(provider: str, model: str, options: list[dict[str, Any]]) -> str:
     return base + "#" + ",".join(parts)
 
 
+def budget_estimate(policy: dict[str, Any], depth: int, override: float | None) -> float | None:
+    if override is not None:
+        return float(override)
+    budget = policy.get("budget") or {}
+    mapping = budget.get("estimated_units_by_depth") or {}
+    value = mapping.get(str(depth), mapping.get(depth))
+    if value is None:
+        fallback = {1: 2500, 2: 12000, 3: 50000, 4: 150000, 5: 400000}
+        value = fallback.get(depth)
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def usage_remaining(usage: dict[str, Any], provider: str, model: str) -> tuple[float | None, str | None]:
+    """Return remaining budget for a target, preferring a model override."""
+    models = usage.get("models") or {}
+    record = models.get(f"{provider}:{model}")
+    if isinstance(record, dict):
+        record = record.get("remaining")
+    if record is not None:
+        try:
+            return float(record), "model"
+        except (TypeError, ValueError):
+            return None, "model"
+
+    providers = usage.get("providers") or {}
+    record = providers.get(provider)
+    if isinstance(record, dict):
+        record = record.get("remaining")
+    if record is not None:
+        try:
+            return float(record), "provider"
+        except (TypeError, ValueError):
+            return None, "provider"
+    return None, None
+
+
 def build_candidates(caps: dict[str, Any], policy: dict[str, Any], args: argparse.Namespace) -> list[dict[str, Any]]:
     domain = args.domain or ROLE_DOMAIN[args.role]
     excludes = set(args.exclude or [])
@@ -285,11 +325,14 @@ def main() -> int:
     ap.add_argument("--role", choices=ROLES, required=True)
     ap.add_argument("--depth", type=int, choices=range(1, 6), required=True)
     ap.add_argument("--domain", choices=DOMAINS)
-    ap.add_argument("--ignore-cost", action="store_true", help="maximize reasoning; ignore price and soft quota")
+    ap.add_argument("--ignore-cost", action="store_true", help="maximize reasoning; ignore price tiers, not remaining usage")
     ap.add_argument("--parent-provider")
     ap.add_argument("--parent-model")
     ap.add_argument("--min-context", type=int)
     ap.add_argument("--max-cost-tier", type=float)
+    ap.add_argument("--usage", help="JSON remaining-usage snapshot; enables budget filtering")
+    ap.add_argument("--estimate-units", type=float, help="estimated units for this unit; defaults to the policy by depth")
+    ap.add_argument("--allow-unknown-budget", action="store_true", help="allow targets with no entry in the usage snapshot")
     ap.add_argument("--exclude", action="append", default=[], help="canonical key or model id")
     ap.add_argument("--no-options", action="store_true")
     ap.add_argument("--json", action="store_true")
@@ -306,35 +349,91 @@ def main() -> int:
         return 2
 
     domain = args.domain or ROLE_DOMAIN[args.role]
+    usage: dict[str, Any] | None = None
+    budget_checked = False
+    estimated_units: float | None = None
+    budget_rejected = 0
+
+    if args.usage:
+        usage = load_json(Path(args.usage))
+        if not isinstance(usage, dict):
+            print("usage must be a JSON object", file=sys.stderr)
+            return 2
+        policy_unit = (policy.get("budget") or {}).get("unit")
+        usage_unit = usage.get("unit") or policy_unit
+        if policy_unit and usage_unit and policy_unit != usage_unit:
+            print(
+                f"usage unit {usage_unit!r} does not match policy unit {policy_unit!r}",
+                file=sys.stderr,
+            )
+            return 2
+        estimated_units = budget_estimate(policy, args.depth, args.estimate_units)
+        if estimated_units is None:
+            print("no budget estimate; pass --estimate-units", file=sys.stderr)
+            return 2
+        budget_checked = True
+
     candidates = build_candidates(caps, policy, args)
+    if usage is not None:
+        kept: list[dict[str, Any]] = []
+        for candidate in candidates:
+            remaining, source = usage_remaining(usage, candidate["provider"], candidate["model"])
+            if remaining is None and not args.allow_unknown_budget:
+                budget_rejected += 1
+                continue
+            if remaining is not None and estimated_units is not None and remaining < estimated_units:
+                budget_rejected += 1
+                continue
+            candidate["remaining"] = remaining
+            candidate["remaining_source"] = source
+            kept.append(candidate)
+        candidates = kept
+
     chosen = select(candidates, ignore_cost=args.ignore_cost)
 
     if args.explain:
         print(
             f"route: role={args.role} domain={domain} depth={args.depth} "
-            f"ignore_cost={args.ignore_cost} candidates={len(candidates)}",
+            f"ignore_cost={args.ignore_cost} candidates={len(candidates)} "
+            f"budget_checked={budget_checked} budget_rejected={budget_rejected}",
             file=sys.stderr,
         )
+        if budget_checked:
+            print(f"  estimated_units={estimated_units}", file=sys.stderr)
         for c in sorted(candidates, key=lambda x: (-x["score"], x["cost"], x["key"])):
+            remaining = c.get("remaining")
             print(
                 f"  {c['key']:<48} score={c['score']:.1f} cost={c['cost']:.1f} "
-                f"known={c['known']} parent={c['parent']}",
+                f"known={c['known']} parent={c['parent']} remaining={remaining}",
                 file=sys.stderr,
             )
 
+    budget = {
+        "checked": budget_checked,
+        "unit": (usage or {}).get("unit") or (policy.get("budget") or {}).get("unit"),
+        "estimated_units": estimated_units,
+        "rejected": budget_rejected,
+    }
+
     if chosen is None:
+        budget_exceeded = budget_checked and budget_rejected > 0
         result = {
-            "status": "unavailable",
-            "reason": "no eligible target meets the requested depth",
+            "status": "budget_exceeded" if budget_exceeded else "unavailable",
+            "reason": (
+                "estimated usage exceeds remaining budget for every eligible target"
+                if budget_exceeded
+                else "no eligible target meets the requested depth"
+            ),
             "role": args.role,
             "domain": domain,
             "depth": args.depth,
             "ignore_cost": args.ignore_cost,
+            "budget": budget,
         }
         if args.json:
             print(json.dumps(result, indent=2))
         else:
-            print("UNAVAILABLE")
+            print("BUDGET_EXCEEDED" if budget_exceeded else "UNAVAILABLE")
         return 0
 
     result = {
@@ -353,6 +452,9 @@ def main() -> int:
         "cost_tier": chosen["cost"],
         "known": chosen["known"],
         "parent_preferred": chosen["parent"],
+        "budget": budget,
+        "remaining_units": chosen.get("remaining"),
+        "remaining_source": chosen.get("remaining_source"),
     }
     if args.json:
         print(json.dumps(result, indent=2))

@@ -21,6 +21,7 @@ SKILL_MD = SKILL / "SKILL.md"
 SELECT = SKILL / "scripts" / "select_target.py"
 VALIDATE = SKILL / "scripts" / "validate_plan.py"
 CAPS = ROOT / "tests" / "fixtures" / "capabilities.json"
+USAGE = ROOT / "tests" / "fixtures" / "usage.json"
 EXAMPLE = SKILL / "assets" / "plan.example.json"
 
 
@@ -143,6 +144,68 @@ class SelectTargetTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["status"], "unavailable")
         self.assertEqual(result.stdout.strip().splitlines()[0], "{")
+
+    def test_usage_excludes_over_budget_target(self) -> None:
+        result = run(
+            SELECT,
+            "--capabilities", str(CAPS),
+            "--role", "review",
+            "--depth", "4",
+            "--usage", str(USAGE),
+            "--json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "budget_exceeded")
+        self.assertTrue(payload["budget"]["checked"])
+
+    def test_usage_selects_affordable_parent(self) -> None:
+        result = run(
+            SELECT,
+            "--capabilities", str(CAPS),
+            "--role", "implementation",
+            "--depth", "3",
+            "--parent-provider", "opencode",
+            "--parent-model", "opencode-go/deepseek-v4.1-flash",
+            "--usage", str(USAGE),
+            "--json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["target"]["providerInstanceId"], "opencode")
+        self.assertEqual(payload["remaining_units"], 1000000)
+        self.assertTrue(payload["budget"]["checked"])
+
+    def test_unknown_budget_requires_opt_in(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"unit": "tokens", "providers": {"opencode": {"remaining": 1000000}}}, f)
+            path = f.name
+        try:
+            blocked = run(
+                SELECT,
+                "--capabilities", str(CAPS),
+                "--role", "review",
+                "--depth", "4",
+                "--usage", path,
+                "--json",
+            )
+            self.assertEqual(blocked.returncode, 0, blocked.stderr)
+            self.assertEqual(json.loads(blocked.stdout)["status"], "budget_exceeded")
+
+            allowed = run(
+                SELECT,
+                "--capabilities", str(CAPS),
+                "--role", "review",
+                "--depth", "4",
+                "--usage", path,
+                "--allow-unknown-budget",
+                "--json",
+            )
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            self.assertEqual(json.loads(allowed.stdout)["target"]["providerInstanceId"], "codex")
+        finally:
+            Path(path).unlink(missing_ok=True)
 
     def test_route_only_stdout_is_one_line(self) -> None:
         result = run(
