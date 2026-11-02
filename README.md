@@ -1,8 +1,8 @@
 # SubagentClassifierToolkit
 
-A T3 Code skill for deciding **when** to use subagents, **which** provider/model to use, and **how** to deploy, supervise, and integrate them.
+A T3 Code toolkit for deciding **when** to use subagents, **which** provider/model to use, **how** to deploy and supervise them, and **which project tools/languages** they should use.
 
-The skill is in [`.opencode/skills/subagent-orchestrator/`](.opencode/skills/subagent-orchestrator/). It is not just a prompt that prints a model name. It is an operating procedure for:
+The main skill is [`.opencode/skills/subagent-orchestrator/`](.opencode/skills/subagent-orchestrator/). It is not just a prompt that prints a model name. It is an operating procedure for:
 
 - classifying a task into independent work units,
 - selecting the cheapest capable T3 target, or the strongest target when `IGNORE_COST` is set,
@@ -27,17 +27,16 @@ Project scope:
 
 ```bash
 mkdir -p .opencode/skills
-cp -R /path/to/SubagentClassifierToolkit/.opencode/skills/subagent-orchestrator .opencode/skills/
+cp -R /path/to/SubagentClassifierToolkit/.opencode/skills/* .opencode/skills/
 ```
 
 User scope:
 
 ```bash
-cp -R /path/to/SubagentClassifierToolkit/.opencode/skills/subagent-orchestrator \
-  ~/.config/opencode/skills/
+cp -R /path/to/SubagentClassifierToolkit/.opencode/skills/* ~/.config/opencode/skills/
 ```
 
-The skill name is `subagent-orchestrator`; it matches the directory name and the `skill` tool identifier.
+Skill names match their directories: `subagent-orchestrator` and `project-classifier`.
 
 ## Use
 
@@ -49,6 +48,8 @@ Ask for the outcome, not the mechanism:
 - `Run the test matrix on Linux and macOS in parallel.`
 - `Ignore cost and use the strongest available model for this migration.`
 - `Route only: which target should handle a multi-file security review?`
+- `Generate a project router for this repo.`
+- `Build a project classifier for this repo.`
 
 The skill will first decide whether delegation is justified. If it is not, it will do the work directly.
 
@@ -95,6 +96,27 @@ python3 .opencode/skills/subagent-orchestrator/scripts/select_target.py \
 
 If no eligible target fits, the selector returns `BUDGET_EXCEEDED` instead of launching a task that cannot finish. `IGNORE_COST=true` still respects the remaining-usage check. Unknown providers are not treated as unlimited.
 
+## Project classifier
+
+The second skill builds a **project-local tool router** from repository evidence. It answers competing language/engine/tool questions and "which test command?" without guessing from the model's preferences.
+
+```bash
+python3 .opencode/skills/project-classifier/scripts/build_project_classifier.py --root . --dry-run
+python3 .opencode/skills/project-classifier/scripts/build_project_classifier.py \
+  --root . --out .opencode/skills/my-project-tool-router
+```
+
+The generated skill lives inside the project and includes:
+
+- language/file/manifest/framework evidence,
+- installed-vs-used tool distinctions,
+- build/test commands,
+- generic routing rules for multiple languages, engines, and build tools,
+- a machine-readable `data/project-profile.json`,
+- an evidence file.
+
+Refresh it after a stack change with `--force`.
+
 ## What is in the box
 
 ```text
@@ -112,10 +134,17 @@ If no eligible target fits, the selector returns `BUDGET_EXCEEDED` instead of la
 └── scripts/
     ├── select_target.py         # deterministic route-only selector
     └── validate_plan.py         # plan and dependency validator
+.opencode/skills/project-classifier/
+├── SKILL.md                     # project-classifier workflow
+├── references/detection.md      # detection heuristics and confidence
+├── assets/profile.example.json  # profile shape
+└── scripts/build_project_classifier.py
 tests/
-└── test_toolkit.py              # CLI tests, no third-party dependencies
+├── test_toolkit.py              # subagent-orchestrator tests
+└── test_project_classifier.py   # project-classifier tests
 docs/
-└── requirements.md              # requirement-to-implementation mapping
+├── requirements.md              # requirement-to-implementation mapping
+└── roadmap.md                   # other useful toolkit pieces
 ```
 
 ## Design principles
@@ -169,8 +198,8 @@ python3 .opencode/skills/subagent-orchestrator/scripts/select_target.py \
 
 The scripts are optional helpers. The skill itself uses the live tools.
 
-See [`docs/requirements.md`](docs/requirements.md) for the requirement-to-implementation mapping and the deliberate deviations from the original daily-sync design.
+See [`docs/requirements.md`](docs/requirements.md) for the requirement-to-implementation mapping and [`docs/roadmap.md`](docs/roadmap.md) for other useful toolkit pieces.
 
 ## Status
 
-Initial implementation. The routing policy is a starter heuristic, not a benchmark. Adjust `data/routing-policy.json` to match your own quality and cost measurements.
+Two skills: subagent model/agent orchestration and project toolchain classification. The routing policy is a starter heuristic, not a benchmark. Adjust `data/routing-policy.json` to match your own quality and cost measurements. The project classifier is conservative by design; low-confidence evidence is reported, not hidden.
