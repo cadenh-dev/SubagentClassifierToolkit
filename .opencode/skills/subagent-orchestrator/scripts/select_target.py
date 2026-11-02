@@ -245,6 +245,26 @@ def role_allowed(policy: dict[str, Any], role: str, key: str, model_id: str) -> 
     return True, None
 
 
+def web_allowed(policy: dict[str, Any], key: str, model_id: str) -> bool:
+    """Return whether this target may do delegated web research."""
+    patterns = ((policy.get("web_research") or {}).get("models")) or []
+    if not patterns:
+        return True
+    return any(
+        fnmatch(model_id.lower(), str(p).lower()) or fnmatch(key.lower(), str(p).lower())
+        for p in patterns
+    )
+
+
+def web_only(policy: dict[str, Any], key: str, model_id: str) -> bool:
+    """Return whether this model is reserved for web-research units."""
+    patterns = ((policy.get("web_research") or {}).get("web_only")) or []
+    return any(
+        fnmatch(model_id.lower(), str(p).lower()) or fnmatch(key.lower(), str(p).lower())
+        for p in patterns
+    )
+
+
 def build_candidates(caps: dict[str, Any], policy: dict[str, Any], args: argparse.Namespace) -> list[dict[str, Any]]:
     domain = args.domain or ROLE_DOMAIN[args.role]
     excludes = set(args.exclude or [])
@@ -274,6 +294,10 @@ def build_candidates(caps: dict[str, Any], policy: dict[str, Any], args: argpars
                 continue
             allowed, _reason = role_allowed(policy, args.role, key, mid)
             if not allowed:
+                continue
+            if getattr(args, "web", False) and not web_allowed(policy, key, mid):
+                continue
+            if not getattr(args, "web", False) and web_only(policy, key, mid):
                 continue
 
             score, cost, known, context = score_for(policy, key, domain)
@@ -354,6 +378,7 @@ def main() -> int:
     ap.add_argument("--estimate-units", type=float, help="estimated units for this unit; defaults to the policy by depth")
     ap.add_argument("--allow-unknown-budget", action="store_true", help="allow targets with no entry in the usage snapshot")
     ap.add_argument("--exclude", action="append", default=[], help="canonical key or model id")
+    ap.add_argument("--web", action="store_true", help="web research: restrict to policy web_research.models (Gemini Flash)")
     ap.add_argument("--no-options", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--explain", action="store_true", help="write scoring details to stderr")
