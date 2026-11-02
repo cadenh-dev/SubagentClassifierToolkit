@@ -21,6 +21,17 @@
       "default": false,
       "description": "When true, maximize reasoning among eligible targets."
     },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unit": { "type": "string" },
+        "estimated_units": { "type": "number" },
+        "remaining_units": { "type": "number" },
+        "note": { "type": "string" }
+      },
+      "description": "Optional usage snapshot for the plan. The router still checks each target."
+    },
     "units": {
       "type": "array",
       "minItems": 0,
