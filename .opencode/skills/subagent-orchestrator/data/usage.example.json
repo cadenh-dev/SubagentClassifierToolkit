@@ -1,0 +1,26 @@
+{
+  "_comment": "User-maintained remaining-usage snapshot. This is not read from T3 automatically. Update it from the provider/T3 usage screen before a budget-sensitive run. Units must match the routing policy's budget.unit.",
+  "unit": "tokens",
+  "updated": "2026-11-01T00:00:00Z",
+  "providers": {
+    "codex": {
+      "remaining": 500000,
+      "resets": "2026-11-08T00:00:00Z"
+    },
+    "opencode": {
+      "remaining": 900000
+    },
+    "cursor": {
+      "remaining": 750000
+    },
+    "antigravity": {
+      "remaining": 400000
+    }
+  },
+  "models": {
+    "codex:gpt-6.1-sol": {
+      "remaining": 150000,
+      "note": "Override the provider total when one model has its own cap."
+    }
+  }
+}

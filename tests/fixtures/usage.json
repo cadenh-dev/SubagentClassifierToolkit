@@ -1,0 +1,19 @@
+{
+  "unit": "tokens",
+  "providers": {
+    "codex": {
+      "remaining": 10000
+    },
+    "opencode": {
+      "remaining": 1000000
+    },
+    "antigravity": {
+      "remaining": 1000000
+    }
+  },
+  "models": {
+    "codex:gpt-6.1-sol": {
+      "remaining": 8000
+    }
+  }
+}

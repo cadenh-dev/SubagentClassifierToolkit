@@ -78,7 +78,7 @@ Do not use a disabled provider just because it has the highest score. Do not use
 1. Highest reasoning score for the domain among eligible targets.
 2. Tie-break: larger context, higher remaining quota, lower latency.
 3. Select the highest supported effort option.
-4. Ignore price and soft quota. **Do not** ignore availability, disabled providers, or cooldowns.
+4. Ignore price and soft quota. **Do not** ignore availability, disabled providers, cooldowns, or remaining usage.
 5. If no eligible target exists, return `UNAVAILABLE`.
 
 ### Cost tiers vs. exact prices
@@ -100,7 +100,47 @@ Exact per-token prices are not exposed uniformly across T3 providers, and subscr
 
 Scores are 1–5 per domain. They are a routing policy, not a published benchmark. If a model has no score, treat it as depth 2 (general) and cost tier 3; do not let an unknown model win max-reasoning mode over a scored model.
 
-## 5. Options
+## 5. Budget and remaining usage
+
+T3 does not expose a uniform remaining-usage API across providers. Do not invent it, and do not read private usage caches. If the user has a remaining-usage number, put it in a snapshot:
+
+```json
+{
+  "unit": "tokens",
+  "providers": {
+    "codex": { "remaining": 500000, "resets": "2026-11-08T00:00:00Z" },
+    "opencode": { "remaining": 900000 }
+  },
+  "models": {
+    "codex:gpt-6.1-sol": { "remaining": 150000 }
+  }
+}
+```
+
+`data/usage.example.json` is the starter shape. Units must match the routing policy's `budget.unit`.
+
+Estimates by depth (from `data/routing-policy.json`):
+
+| Depth | Rough total units |
+|---|---|
+| 1 | 2,500 |
+| 2 | 12,000 |
+| 3 | 50,000 |
+| 4 | 150,000 |
+| 5 | 400,000 |
+
+These are order-of-magnitude estimates, not promises. Override them with `--estimate-units` when the unit is unusually large or small.
+
+Rules:
+
+- A target with `remaining < estimated_units` is ineligible.
+- A provider/model missing from the snapshot is **unknown**, not unlimited. Skip it unless `--allow-unknown-budget` is explicitly set.
+- If every capability-eligible target fails the budget, return `BUDGET_EXCEEDED`. Do not quietly choose a more expensive target.
+- `IGNORE_COST=true` ignores price tiers, not remaining usage. Use the strongest target that fits, or stop.
+- After the run, update the snapshot with actual usage if available. If not, mark it stale; a stale snapshot is not a guarantee.
+- If the task is too large for the remaining budget, split it into smaller units or do the critical part locally. Do not launch a unit that cannot finish.
+
+## 6. Options
 
 Options are provider-specific. Read them from capabilities; never assume an option id from another provider.
 
@@ -123,7 +163,7 @@ Selection rules:
   `fastMode=true`; `serviceTier=default`; `contextWindow` default/smallest.
 - Pass only declared option ids. For cross-provider targets, pass the selected options explicitly instead of relying on inherited parent options.
 
-## 6. Route-only output
+## 7. Route-only output
 
 Canonical form:
 
@@ -144,10 +184,10 @@ Rules:
 - One line. No Markdown, JSON, backticks, quotes, or explanation.
 - Validate the target against the capabilities you just read.
 - Never output a display name such as "DeepSeek V4.1 Flash".
-- `UNAVAILABLE` is the only non-target output.
+- `UNAVAILABLE` and `BUDGET_EXCEEDED` are the only non-target outputs.
 - Preserve `/`, `.`, `-`, `_`, `:`, `@`, and `#` inside the identifier.
 
-## 7. Worked examples
+## 8. Worked examples
 
 These use hypothetical scores. Read the live capability list and policy before acting.
 
@@ -186,7 +226,7 @@ These use hypothetical scores. Read the live capability list and policy before a
 - Cost mode: no target meets depth 4.
 - Result: do the work in the parent or ask; route-only output `UNAVAILABLE`.
 
-## 8. Failure and cooldown policy
+## 9. Failure and cooldown policy
 
 - **429 / rate limit:** mark the target cooling down for the provider's reset window if known; otherwise use a short backoff. Choose the next eligible target.
 - **Auth failure:** remove the target for this thread; do not retry.

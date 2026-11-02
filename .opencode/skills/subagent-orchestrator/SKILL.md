@@ -14,6 +14,7 @@ The default is **do it yourself**. Delegation is a tool, not a ritual.
 - **Do not delegate trivial work.** One small edit, one question, or a tightly coupled change is faster in the parent.
 - **Read live capabilities.** Call `orchestrator_capabilities` before the first delegation in a thread. Do not invent model names, prices, or availability.
 - **Availability beats cost.** A disabled provider, a model that cannot run child tasks, or a cooling-down target is not a candidate — even with `IGNORE_COST=true`.
+- **Budget before launch.** Never start a unit whose estimated usage exceeds the remaining budget. If remaining usage is unknown, ask for a cap or use a conservative limit; do not assume it is infinite.
 - **One frame, one call; one unit, one brief.** A subagent gets a self-contained task, not the parent's entire history.
 - **Worktree for writes, shared for read-only.** Parallel implementations never share a checkout.
 - **Verify the work.** A child's summary is a claim. Read the diff, run the tests, and check the acceptance criteria.
@@ -73,7 +74,8 @@ A target is eligible only when:
 - it has no blocking `constraints` (for example, "Provider instance is disabled");
 - the model id is present;
 - if the parent uses a different provider, the provider supports cross-provider child tasks;
-- the target is not rate-limited or cooling down.
+- the target is not rate-limited or cooling down;
+- the target has enough remaining usage for the estimated unit, when a usage snapshot is available.
 
 ### Score the task
 
@@ -112,7 +114,7 @@ Round up when ambiguous. A wrong cheap route is more expensive than the right on
 1. The highest reasoning score for the domain among eligible targets.
 2. Tie-break: larger context, higher remaining quota, lower latency.
 3. Choose the highest supported effort option (`max`, `xhigh`, `ultra`, or the provider's equivalent).
-4. Ignore price and soft quota. Do **not** ignore availability or cooldowns.
+4. Ignore price and soft quota. Do **not** ignore availability, cooldowns, or the remaining-usage check.
 5. If no eligible target exists, return `UNAVAILABLE`; do not fabricate one.
 
 ### Options
@@ -126,6 +128,30 @@ Read option ids and values from `orchestrator_capabilities`; they differ by prov
 - Antigravity: `thinking_level`.
 
 Pass only options the target declares. For cross-provider delegation, pass the full selected options rather than inheriting the parent's options.
+
+### Budget and usage left
+
+T3 does not expose a uniform "remaining usage" API for every provider. Use a user-maintained snapshot when the user has one:
+
+```bash
+cp data/usage.example.json data/usage.json
+# edit remaining units for the providers/models you can actually use
+```
+
+The selector compares `remaining` against an estimate by depth. Override the estimate for unusually large or small units:
+
+```bash
+python3 scripts/select_target.py --capabilities caps.json --usage data/usage.json \
+  --role implementation --depth 4 --estimate-units 220000
+```
+
+Rules:
+
+1. A target with `remaining < estimate` is ineligible.
+2. A provider/model missing from the snapshot is **unknown**, not unlimited. Skip it unless the user explicitly opts in with `--allow-unknown-budget`.
+3. If every eligible target fails the budget, return `BUDGET_EXCEEDED`; do not launch and do not silently pick a more expensive target.
+4. `IGNORE_COST=true` ignores price tiers, not the remaining usage check. If the max-reasoning target does not fit, use the strongest target that does or stop.
+5. After the unit finishes, update the snapshot with actual usage if the provider reports it. If it does not, mark the snapshot stale rather than pretending it is exact.
 
 Use `data/routing-policy.json` and `scripts/select_target.py` when you want a deterministic route. The policy is a starter heuristic; edit it to match your own measurements.
 
@@ -217,6 +243,7 @@ Do not accept "done" as done.
 5. **Link the PR in the parent** with `link_pull_request`. The parent owns the PR relationship. A child never watches a PR.
 6. **Watch only when asked or when the remaining work is waiting on checks/reviews.** Then call `watch_pull_request` and end the turn.
 7. **Report** the target used, units completed, tests run, PR links, and any unresolved risks.
+8. **Update the usage snapshot** if the user maintains one and actual usage is available. If the provider does not report it, mark the snapshot stale.
 
 For a child that created a PR, its last line should be:
 
@@ -256,7 +283,13 @@ or:
 UNAVAILABLE
 ```
 
-No Markdown, JSON, backticks, quotes, or commentary. Preserve `/`, `.`, `-`, `_`, `:`, `@`, and `#` because they are part of the identifier. Do not output a display name. Validate the target against the capabilities you just read.
+or:
+
+```text
+BUDGET_EXCEEDED
+```
+
+No Markdown, JSON, backticks, quotes, or commentary. Preserve `/`, `.`, `-`, `_`, `:`, `@`, and `#` because they are part of the identifier. Do not output a display name. Validate the target against the capabilities you just read. Use `BUDGET_EXCEEDED` only when a capability-eligible target exists but none fits the remaining usage.
 
 Use `scripts/select_target.py` if a deterministic result is preferred:
 
@@ -287,5 +320,7 @@ python3 scripts/select_target.py --capabilities caps.json \
 - [`references/operations.md`](references/operations.md) — isolation, lifecycle, supervision, integration.
 - [`assets/brief-template.md`](assets/brief-template.md) — copy-paste brief.
 - [`assets/plan.schema.json`](assets/plan.schema.json) — delegation plan contract.
+- [`data/routing-policy.json`](data/routing-policy.json) — cost/reasoning tiers and budget estimates.
+- [`data/usage.example.json`](data/usage.example.json) — remaining-usage snapshot shape.
 - [`scripts/select_target.py`](scripts/select_target.py) — deterministic route-only selector.
 - [`scripts/validate_plan.py`](scripts/validate_plan.py) — plan validator.
