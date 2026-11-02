@@ -24,6 +24,7 @@ This maps the original classifier requirements to the implementation.
 | No nested delegation | Non-negotiables; child rules | Child does the work itself unless explicitly allowed |
 | No polling | Non-negotiables; Phase 6 | Completion wakes the parent |
 | Testable routing | `tests/test_toolkit.py`; CI workflow | Cost, max, disabled, unavailable, cycles, strict warnings |
+| Project-local tool classifier | `.opencode/skills/project-classifier/`; `build_project_classifier.py`; `tests/test_project_classifier.py` | Detects languages, frameworks, engines, commands; generates a project router with evidence and confidence |
 
 ## Deliberate deviations
 
