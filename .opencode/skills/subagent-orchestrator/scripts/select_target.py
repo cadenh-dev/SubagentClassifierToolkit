@@ -9,7 +9,7 @@ want one canonical target.
 Usage:
   select_target.py --capabilities caps.json --role implementation --depth 3
   select_target.py --capabilities caps.json --role review --depth 5 --ignore-cost --json
-  select_target.py --capabilities caps.json --role review --depth 4 --provider codex --model gpt-6.1-sol
+  select_target.py --capabilities caps.json --role review --depth 4 --provider codex --model gpt-6.1-sol --option reasoningEffort=high
 
 Output:
   providerInstanceId:model[#option=value,...]
@@ -55,7 +55,7 @@ def finite_number(value: Any) -> float | None:
         return None
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) else None
 
@@ -85,7 +85,7 @@ def context_units(value: Any) -> float | None:
         text = text[:-1]
     try:
         parsed = float(text) * multiplier
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
     return parsed if math.isfinite(parsed) and parsed >= 0 else None
 
@@ -111,17 +111,40 @@ VALUE_RANK = {
 
 def load_json(path: Path) -> Any:
     try:
-        with path.open(encoding="utf-8") as f:
-            return json.load(f)
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         print(f"file not found: {path}", file=sys.stderr)
-        raise SystemExit(2)
-    except json.JSONDecodeError as e:
-        print(f"invalid JSON in {path}: {e}", file=sys.stderr)
         raise SystemExit(2)
     except (OSError, UnicodeDecodeError) as e:
         print(f"could not read {path}: {e}", file=sys.stderr)
         raise SystemExit(2)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        print(f"invalid JSON in {path}: {e}", file=sys.stderr)
+        raise SystemExit(2)
+    except (ValueError, RecursionError) as e:
+        print(f"invalid JSON in {path}: {e}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+def parse_option_pin(raw: str) -> tuple[str, Any]:
+    """Parse an exact option pin such as variant=max or fastMode=false."""
+    if "=" not in raw:
+        raise InputError(f"--option must be id=value, got {raw!r}")
+    option_id, value = raw.split("=", 1)
+    option_id = option_id.strip()
+    value = value.strip()
+    if not option_id:
+        raise InputError("--option id must be a non-empty string")
+    if not value:
+        raise InputError(f"--option {option_id!r} must have a value")
+    lowered = value.lower()
+    if lowered == "true":
+        return option_id, True
+    if lowered == "false":
+        return option_id, False
+    return option_id, value
 
 
 def declared(value: Any, values: list[Any]) -> bool:
@@ -616,9 +639,28 @@ def build_candidates(caps: dict[str, Any], policy: dict[str, Any], args: argpars
                 if context is None or context < args.min_context:
                     continue
 
+            model_options = [
+                option for option in (model.get("options", []) or []) if isinstance(option, dict)
+            ]
+            option_pins: dict[str, Any] = getattr(args, "option_pins", {})
             selected: list[dict[str, Any]] = []
+            pin_ok = True
+            for option_id, pinned_value in option_pins.items():
+                option = next(
+                    (item for item in model_options if item.get("id") == option_id),
+                    None,
+                )
+                values = option.get("values") if option is not None else None
+                if not isinstance(values, list) or not declared(pinned_value, values):
+                    pin_ok = False
+                    break
+                selected.append({"id": option_id, "value": pinned_value})
+            if not pin_ok:
+                continue
             if not args.no_options:
-                for option in model.get("options", []) or []:
+                for option in model_options:
+                    if option.get("id") in option_pins:
+                        continue
                     chosen = choose_option(option, maximize=args.ignore_cost, depth=args.depth)
                     if chosen is not None:
                         selected.append({"id": chosen[0], "value": chosen[1]})
@@ -681,6 +723,13 @@ def main() -> int:
     ap.add_argument("--ignore-cost", action="store_true", help="maximize reasoning; ignore price tiers, not remaining usage")
     ap.add_argument("--provider", help="pin to an exact providerInstanceId; no fallback when unavailable")
     ap.add_argument("--model", help="pin to an exact model id; no fallback when unavailable")
+    ap.add_argument(
+        "--option",
+        action="append",
+        default=[],
+        metavar="ID=VALUE",
+        help="pin an exact option value; candidate must declare it",
+    )
     ap.add_argument("--parent-provider")
     ap.add_argument("--parent-model")
     ap.add_argument("--min-context", type=int)
@@ -702,6 +751,20 @@ def main() -> int:
         if value is not None and not value.strip():
             print(f"{flag} must be a non-empty string", file=sys.stderr)
             return 2
+    if args.option and args.no_options:
+        print("--option cannot be combined with --no-options", file=sys.stderr)
+        return 2
+    option_pins: dict[str, Any] = {}
+    try:
+        for raw in args.option:
+            option_id, value = parse_option_pin(raw)
+            if option_id in option_pins:
+                raise InputError(f"duplicate --option id {option_id!r}")
+            option_pins[option_id] = value
+    except InputError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    args.option_pins = option_pins
     if args.estimate_units is not None and nonnegative_number(args.estimate_units) is None:
         print("--estimate-units must be a finite non-negative number", file=sys.stderr)
         return 2

@@ -1,6 +1,6 @@
 # Subagent brief
 
-Copy this into the `task` field of `delegate_task`. Replace every `<...>`.
+Copy this into the `task` field of `delegate_task` or the native subagent tool. Replace every `<...>`.
 
 ```text
 ROLE: <research | design | implementation | test | review | general>
@@ -42,8 +42,11 @@ REPORT
 
 RULES
 - Do the work yourself. Do not start subagents unless this brief says so.
+- Use the checkout and isolation the parent provides; do not create a worktree or checkout.
 - Do not watch a PR. The parent owns the watch.
 - Do not modify files outside the write scope.
 - Do not touch secrets or credentials.
+- Do not request approval for work this brief already authorizes; ask only when a decision or permission is genuinely missing.
+- If you create or update a PR, make your last line: `PR <full URL>, head <SHA>, checks and reviews <state>.`
 - If blocked, ask one specific question with the options you considered.
 ```

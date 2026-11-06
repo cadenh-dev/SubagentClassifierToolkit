@@ -2,6 +2,12 @@
 
 A T3 Code toolkit for deciding **when** to use subagents, **which** provider/model to use, **how** to deploy and supervise them, and **which project tools/languages** they should use.
 
+Three skills ship in the box:
+
+- [`subagent-orchestrator`](.opencode/skills/subagent-orchestrator/) — routing, briefs, supervision, verification, and an outcome ledger.
+- [`project-classifier`](.opencode/skills/project-classifier/) — generates a project-local tool router from repository evidence.
+- [`skill-linter`](.opencode/skills/skill-linter/) — read-only packaging checks for Agent Skills.
+
 The main skill is [`.opencode/skills/subagent-orchestrator/`](.opencode/skills/subagent-orchestrator/). It is not just a prompt that prints a model name. It is an operating procedure for:
 
 - classifying a task into independent work units,
@@ -17,7 +23,7 @@ It also includes a route-only mode for callers that only want a canonical target
 
 Subagents are useful when work is genuinely parallel, cross-provider, isolated, or needs an independent review. They are harmful when they duplicate work, write to the same files, or turn a one-line edit into a token-burning committee.
 
-This toolkit encodes that distinction. The default is **do it yourself**. Delegation is opt-in, with a brief and an acceptance test for every unit.
+This toolkit encodes that distinction. The default is **do it yourself** when you leave the approach open. Delegation is opt-in, with a brief and an acceptance test for every unit. An explicit request to delegate, to keep the parent from coding, or to pin a provider/model/settings is a hard constraint the default cannot override.
 
 ## Install
 
@@ -36,22 +42,24 @@ User scope:
 cp -R /path/to/SubagentClassifierToolkit/.opencode/skills/* ~/.config/opencode/skills/
 ```
 
-Skill names match their directories: `subagent-orchestrator` and `project-classifier`.
+Skill names match their directories: `subagent-orchestrator`, `project-classifier`, and `skill-linter`.
 
 ## Use
 
 Ask for the outcome, not the mechanism:
 
 - `Refactor the auth flow across api/, web/, and db/. Use subagents where it helps.`
+- `Delegate this end to end; do not write code in the parent.`
+- `Use exactly gpt-6.1-sol with high reasoning for this change.`
 - `Compare three caching approaches and recommend one.`
 - `Have one agent implement this and a different one review the diff.`
 - `Run the test matrix on Linux and macOS in parallel.`
 - `Ignore cost and use the strongest available model for this migration.`
 - `Route only: which target should handle a multi-file security review?`
 - `Generate a project router for this repo.`
-- `Build a project classifier for this repo.`
+- `Lint the skills in this repo.`
 
-The skill will first decide whether delegation is justified. If it is not, it will do the work directly.
+The skill will first decide whether delegation is required or justified. If you required it or pinned a target, it honors that constraint or explains honestly why it cannot. If you left the approach open and delegation would not help, it does the work directly.
 
 ### Route-only mode
 
@@ -75,6 +83,18 @@ No Markdown, JSON, backticks, or explanation. The canonical form is:
 
 Preserve `/`, `.`, `-`, `_`, `:`, `@`, and `#`; they are part of real model IDs.
 
+### Pinned targets
+
+If you name a provider, model, or option, the selector uses it exactly instead of re-ranking it:
+
+```bash
+python3 .opencode/skills/subagent-orchestrator/scripts/select_target.py \
+  --capabilities caps.json --role review --depth 4 \
+  --provider codex --model gpt-6.1-sol --option reasoningEffort=high
+```
+
+A pin that is missing, disabled, undeclared, over budget, cooling down, or disallowed by local policy returns `UNAVAILABLE` or `BUDGET_EXCEEDED`. It never falls back to another target or option value.
+
 ## Budget and usage left
 
 T3 does not expose a uniform "remaining usage" API for every provider. The skill therefore supports a user-maintained snapshot:
@@ -94,7 +114,24 @@ python3 .opencode/skills/subagent-orchestrator/scripts/select_target.py \
   --role implementation --depth 4 --estimate-units 220000
 ```
 
-If no eligible target fits, the selector returns `BUDGET_EXCEEDED` instead of launching a task that cannot finish. `IGNORE_COST=true` still respects the remaining-usage check. Unknown providers are not treated as unlimited.
+If no eligible target fits, the selector returns `BUDGET_EXCEEDED` instead of launching a task that cannot finish. `IGNORE_COST=true` still respects the remaining-usage check. Unknown providers are not treated as unlimited. A user-pinned target that does not fit stops with `BUDGET_EXCEEDED`; it is never silently replaced.
+
+## Outcome ledger
+
+The routing policy starts as a heuristic. The outcome ledger records what actually happened so you can tune it from evidence instead of vibes:
+
+```bash
+python3 .opencode/skills/subagent-orchestrator/scripts/outcome_ledger.py record \
+  --unit auth-core --role implementation --depth 3 \
+  --provider codex --model gpt-6.1-sol \
+  --outcome success --verification parent \
+  --estimated-units 50000 --actual-units 41200 \
+  --duration 615 --review-findings 2
+
+python3 .opencode/skills/subagent-orchestrator/scripts/outcome_ledger.py summarize --verified-only
+```
+
+The ledger is append-only JSON Lines in `data/outcomes.jsonl` (git-ignored). It distinguishes a parent-verified success from a child's self-report, keeps unknown usage unknown, and never rewrites the routing policy automatically. See [`references/outcomes.md`](.opencode/skills/subagent-orchestrator/references/outcomes.md).
 
 ## Project classifier
 
@@ -115,7 +152,18 @@ The generated skill lives inside the project and includes:
 - a machine-readable `data/project-profile.json`,
 - an evidence file.
 
-Refresh it after a stack change with `--force`.
+Refresh it after a stack change with `--force`. A refresh overwrites only the managed artifacts (`SKILL.md`, `data/project-profile.json`, `references/evidence.md`); unrelated files in the generated folder are preserved, and an unrecognized destination is refused. Python commands use the first interpreter that passes a fixed version probe, so a broken Windows `python3` alias is reported as `NOT USABLE` rather than baked into the router.
+
+## Skill linter
+
+The third skill is a deterministic, read-only packaging check for Agent Skills:
+
+```bash
+python3 .opencode/skills/skill-linter/scripts/lint_skills.py .opencode/skills
+python3 .opencode/skills/skill-linter/scripts/lint_skills.py .opencode/skills --strict
+```
+
+It validates frontmatter, name/directory agreement, description length, local links, Python helper syntax, high-confidence secrets, and leaked absolute user paths. It never executes inspected code, imports inspected modules, fetches links, or writes files. Exit `0` means clean, `1` means errors (or warnings with `--strict`), and `2` means bad usage.
 
 ## What is in the box
 
@@ -124,24 +172,35 @@ Refresh it after a stack change with `--force`.
 ├── SKILL.md                     # entry point and operating loop
 ├── data/routing-policy.json     # editable cost/reasoning tiers and budget estimates
 ├── data/usage.example.json      # user-maintained remaining-usage snapshot
+├── data/outcomes.jsonl          # created on first record; git-ignored
 ├── references/
-│   ├── routing.md               # task depth, domains, model selection, budget
-│   ├── briefs.md                # role-specific brief templates
-│   └── operations.md            # launch, supervise, verify, integrate
+│   ├── routing.md               # depth, domains, pins, options, budget
+│   ├── briefs.md                # role templates, recheck brief, child rules
+│   ├── operations.md            # launch, supervise, verify, integrate
+│   └── outcomes.md              # outcome-ledger schema and evidence rules
 ├── assets/
 │   ├── brief-template.md        # copy-paste brief
+│   ├── plan.example.json        # example delegation plan
 │   └── plan.schema.json         # delegation plan contract
 └── scripts/
     ├── select_target.py         # deterministic route-only selector
-    └── validate_plan.py         # plan and dependency validator
+    ├── validate_plan.py         # plan and dependency validator
+    └── outcome_ledger.py        # append-only outcome records and summaries
 .opencode/skills/project-classifier/
 ├── SKILL.md                     # project-classifier workflow
 ├── references/detection.md      # detection heuristics and confidence
 ├── assets/profile.example.json  # profile shape
 └── scripts/build_project_classifier.py
+.opencode/skills/skill-linter/
+├── SKILL.md                     # linter workflow and limits
+├── references/checks.md         # diagnostic codes and YAML subset
+└── scripts/lint_skills.py       # read-only checker
 tests/
-├── test_toolkit.py              # subagent-orchestrator tests
-└── test_project_classifier.py   # project-classifier tests
+├── fixtures/                    # capability and usage snapshots
+├── test_toolkit.py              # selector and plan-validator tests
+├── test_project_classifier.py   # project-classifier tests
+├── test_skill_linter.py         # skill-linter tests
+└── test_outcome_ledger.py       # outcome-ledger tests
 docs/
 ├── requirements.md              # requirement-to-implementation mapping
 └── roadmap.md                   # other useful toolkit pieces
@@ -149,15 +208,16 @@ docs/
 
 ## Design principles
 
-1. **Live capabilities beat cached registries.** T3 already exposes `orchestrator_capabilities`; the skill reads it instead of pretending to fetch model prices and benchmarks in the background.
+1. **Live capabilities beat cached registries.** T3 already exposes `orchestrator_capabilities`; the skill reads it once per thread before the first delegate instead of pretending to fetch prices and benchmarks in the background. A listing is not proof of authentication or quota.
 2. **Availability and budget before cost.** A disabled provider, a rate-limited model, or a unit that does not fit the remaining usage is not a candidate.
-3. **Cheapest capable by default.** `IGNORE_COST=false` prefers the inherited target, then the lowest cost tier that meets the reasoning threshold.
+3. **Cheapest capable by default for open choices.** `IGNORE_COST=false` prefers an eligible inherited target, then the lowest cost tier that meets the reasoning threshold. A user-pinned provider, model, or option bypasses ranking and is never silently replaced; a pin that conflicts with a hard local-policy gate is reported, not overridden.
 4. **Budget before launch.** If a remaining-usage snapshot is available, a unit that does not fit is not launched.
 5. **Max reasoning is explicit.** `IGNORE_COST=true` raises the effort and chooses the strongest available target. It does not ignore availability or remaining usage.
 6. **One brief per independent unit.** Each child gets a self-contained task, write scope, acceptance criteria, and reporting contract.
-7. **Worktree for writes, shared for read-only.** Parallel implementation children do not share a checkout.
-8. **Verify, don't trust.** A child's summary is a claim; the parent reads the diff and runs the checks.
+7. **Worktree for writes, shared for read-only.** Any child that writes uses a worktree by default; worktrees come from delegate isolation, not shell setup in the brief. A parent-checkout edit requires a direct user instruction and explicit scope confirmation.
+8. **Verify, don't trust.** A child's summary is a claim; the parent reads the diff and runs the checks. The outcome ledger records whether verification actually happened.
 9. **No nested delegation by default.** A child does the work itself unless the brief explicitly allows otherwise.
+10. **User scope wins over defaults.** If the user requires delegation or forbids parent coding, an unavailable target is reported and questioned, not quietly replaced by parent implementation. A user-pinned target is used exactly or reported as unavailable/over-budget/conflicted. Hard local policy gates are surfaced, not silently bypassed.
 
 ## Requirements
 
@@ -167,6 +227,8 @@ docs/
   - `task_status`
   - `task_cancel`
   - `t3_thread_read`, `t3_thread_send`, `t3_pending_request`
+  - `link_pull_request`, `link_pull_requests`, `watch_pull_request`
+  - the native `subagent` tool when the same provider/model/settings can finish in this turn
 - Python 3.10+ for the optional scripts. No third-party packages.
 - A local editor if you want to adjust `data/routing-policy.json`.
 
@@ -196,10 +258,26 @@ python3 .opencode/skills/subagent-orchestrator/scripts/select_target.py \
   --depth 3
 ```
 
-The scripts are optional helpers. The skill itself uses the live tools.
+Lint every skill after editing:
+
+```bash
+python3 .opencode/skills/skill-linter/scripts/lint_skills.py .opencode/skills --strict
+```
+
+Record and summarize a run:
+
+```bash
+python3 .opencode/skills/subagent-orchestrator/scripts/outcome_ledger.py record \
+  --unit example --role review --depth 4 \
+  --provider codex --model gpt-6.1-sol \
+  --outcome success --verification parent
+python3 .opencode/skills/subagent-orchestrator/scripts/outcome_ledger.py summarize
+```
+
+The scripts are optional helpers. The skill itself uses the live tools. CI runs the full test suite and the skill linter.
 
 See [`docs/requirements.md`](docs/requirements.md) for the requirement-to-implementation mapping and [`docs/roadmap.md`](docs/roadmap.md) for other useful toolkit pieces.
 
 ## Status
 
-Two skills: subagent model/agent orchestration and project toolchain classification. The routing policy is a starter heuristic, not a benchmark. Adjust `data/routing-policy.json` to match your own quality and cost measurements. The project classifier is conservative by design; low-confidence evidence is reported, not hidden.
+Three skills: subagent model/agent orchestration, project toolchain classification, and a read-only skill linter. The routing policy is a starter heuristic, not a benchmark. Adjust `data/routing-policy.json` to match your own quality and cost measurements, using the outcome ledger as evidence. The project classifier is conservative by design; low-confidence evidence is reported, not hidden.

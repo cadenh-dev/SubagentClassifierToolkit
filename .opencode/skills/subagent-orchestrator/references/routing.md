@@ -20,7 +20,9 @@ The useful fields:
 - `providers[].models[].options[]` (`id`, `values`, `default`)
 - `features.appOwnedSubagents`, `maxBatchThreads`
 
-Do not cache this across days and do not scrape pricing. The live tool is the source of truth for availability and options.
+Do not cache this across days and do not scrape pricing. The live tool is the source of truth for availability and options. Reuse the snapshot for the rest of the thread, including route-only calls; re-read only after an error, a provider change, or a user-named provider change.
+
+Capabilities establish **availability**, not **authentication**. A provider can be listed, enabled, and callable while its credential is expired. Do not infer a working login from the capability snapshot.
 
 ## 2. Classify the task
 
@@ -62,18 +64,39 @@ A target is eligible only when all are true:
 5. The target is not rate-limited or cooling down.
 6. If `min_context` is required, the model's context is known and large enough. Unknown is not enough.
 
-Do not use a disabled provider just because it has the highest score. Do not use a model that just returned a 429.
+Do not use a disabled provider just because it has the highest score. Do not use a model that just returned a 429. Authentication failures are a separate state: see §9.
 
 ## 4. Select
 
+### Exact pins
+
+A provider, model, or option named by the user is a hard constraint, not a ranking hint.
+
+```bash
+python3 scripts/select_target.py --capabilities caps.json \
+  --role review --depth 4 --provider codex --model gpt-6.1-sol \
+  --option reasoningEffort=high
+```
+
+- `--provider`, `--model`, and repeated `--option id=value` are exact filters.
+- An eligible pin wins even when a cheaper or higher-scoring target exists.
+- A missing, disabled, disallowed, undeclared option, or cooling-down pin returns `UNAVAILABLE`.
+- A capability-eligible pin that does not fit the remaining budget returns `BUDGET_EXCEEDED`.
+- A pin never falls back to another target or option value. If the user needs a fallback, ask first.
+- Use `--parent-provider` / `--parent-model` for an inherited-target preference; that is a tie-break, not a pin.
+- Local policy remains a hard gate. A pin that conflicts with it produces a visible conflict, not an automatic override.
+
 ### Default: cheapest capable
 
-1. **Parent preference.** If the inherited provider/model is eligible and its reasoning score for the domain is at least the required depth, use it. This avoids a provider hop and is usually the cheapest correct choice. It can lose to a cheaper provider by design; exclude the parent explicitly if you want a pure cost race.
-2. **Cheapest capable.** Otherwise choose the lowest cost tier whose reasoning score is at least the depth.
-3. **Tie-breaks.** Higher reasoning, larger context, higher remaining quota, lower latency, earlier in the policy order.
-4. **No candidate.** Do the work in the parent, or ask the user. Do not quietly route to an under-qualified model.
+1. **User pin.** If the user named a target, select it or stop with the exact failure reason.
+2. **Parent preference.** If the inherited provider/model is eligible and its reasoning score for the domain is at least the required depth, use it. This avoids a provider hop and is usually the cheapest correct choice. An eligible parent wins **before** cost; if you want a pure cost race, exclude the parent explicitly.
+3. **Cheapest capable.** Otherwise choose the lowest cost tier whose reasoning score is at least the depth.
+4. **Tie-breaks.** Higher reasoning, larger context, higher remaining quota, lower latency, earlier in the policy order.
+5. **No candidate.** Do the work in the parent only if the user permits parent execution; otherwise ask or return `UNAVAILABLE`. Do not quietly route to an under-qualified model.
 
 ### `IGNORE_COST=true`: max reasoning
+
+A user pin still wins. If it is eligible, use it with the highest supported effort; if not, stop rather than selecting the strongest unpinned target.
 
 1. Highest reasoning score for the domain among eligible targets.
 2. Tie-break: larger context, higher remaining quota, lower latency.
@@ -136,6 +159,7 @@ Rules:
 - A target with `remaining < estimated_units` is ineligible.
 - A provider/model missing from the snapshot is **unknown**, not unlimited. Skip it unless `--allow-unknown-budget` is explicitly set.
 - If every capability-eligible target fails the budget, return `BUDGET_EXCEEDED`. Do not quietly choose a more expensive target.
+- If a user-pinned target fails the budget, stop with `BUDGET_EXCEEDED`; do not substitute another target.
 - `IGNORE_COST=true` ignores price tiers, not remaining usage. Use the strongest target that fits, or stop.
 - After the run, update the snapshot with actual usage if available. If not, mark it stale; a stale snapshot is not a guarantee.
 - If the task is too large for the remaining budget, split it into smaller units or do the critical part locally. Do not launch a unit that cannot finish.
@@ -162,6 +186,7 @@ Selection rules:
   - depth 5: the highest effort.
   `fastMode=true`; `serviceTier=default`; `contextWindow` default/smallest.
 - Pass only declared option ids. For cross-provider targets, pass the selected options explicitly instead of relying on inherited parent options.
+- If the user names an option value, use it exactly; if it is not declared, report the mismatch and ask rather than repairing it silently.
 
 ## 7. Route-only output
 
@@ -182,7 +207,8 @@ cursor:grok-4.7#reasoning_effort=high,contextWindow=500k,fastMode=false
 Rules:
 
 - One line. No Markdown, JSON, backticks, quotes, or explanation.
-- Validate the target against the capabilities you just read.
+- Reuse this thread's capability snapshot; re-read only after an error or a provider change.
+- A user-named target is emitted exactly when eligible. If it is not, emit `UNAVAILABLE` or `BUDGET_EXCEEDED`; never a different target.
 - Never output a display name such as "DeepSeek V4.1 Flash".
 - `UNAVAILABLE` and `BUDGET_EXCEEDED` are the only non-target outputs.
 - Preserve `/`, `.`, `-`, `_`, `:`, `@`, and `#` inside the identifier.
@@ -228,8 +254,8 @@ These use hypothetical scores. Read the live capability list and policy before a
 
 ## 9. Failure and cooldown policy
 
-- **429 / rate limit:** mark the target cooling down for the provider's reset window if known; otherwise use a short backoff. Choose the next eligible target.
-- **Auth failure:** remove the target for this thread; do not retry.
-- **Invalid option:** drop the option, not the model; retry once with defaults.
-- **Model disappears:** re-read `orchestrator_capabilities` and re-route.
-- **Repeated child failure:** narrow the brief before raising the model.
+- **429 / rate limit:** mark the target cooling down for the provider's reset window if known; otherwise use a short backoff. If the target was user-pinned, stop and report `UNAVAILABLE`; otherwise choose the next eligible target.
+- **Auth failure:** report `authentication required for <provider>` and stop that unit. Do not call it unavailable, remove it for the rest of the thread, or reroute silently. Retry only after the user authenticates or authorizes another target.
+- **Invalid option:** if the user named the option value, report the mismatch and ask. Otherwise drop the option, not the model; retry once with defaults.
+- **Model disappears:** re-read `orchestrator_capabilities` and re-route only if the model was not user-pinned; otherwise report the exact reason and ask.
+- **Repeated child failure:** narrow the brief before raising the model. Do not retry the same brief more than once.
