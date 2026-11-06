@@ -7,13 +7,16 @@ Run:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / ".opencode" / "skills" / "subagent-orchestrator"
@@ -22,6 +25,7 @@ SELECT = SKILL / "scripts" / "select_target.py"
 VALIDATE = SKILL / "scripts" / "validate_plan.py"
 CAPS = ROOT / "tests" / "fixtures" / "capabilities.json"
 USAGE = ROOT / "tests" / "fixtures" / "usage.json"
+POLICY = SKILL / "data" / "routing-policy.json"
 EXAMPLE = SKILL / "assets" / "plan.example.json"
 
 
@@ -59,6 +63,67 @@ def run(script: Path, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         cwd=str(ROOT),
     )
+
+
+@contextmanager
+def temp_json(payload: Any) -> Iterator[str]:
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        path = handle.name
+    try:
+        yield path
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def load_module(name: str, path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def minimal_plan() -> dict[str, Any]:
+    return {
+        "goal": "Ship one small unit.",
+        "mode": "delegated",
+        "units": [
+            {
+                "id": "one",
+                "title": "One unit",
+                "role": "implementation",
+                "objective": "Make the change.",
+                "depends_on": [],
+                "isolation": "worktree",
+                "mode": "async",
+                "target": {"providerInstanceId": "codex", "model": "gpt-6.1-sol"},
+                "write_scope": ["src/**"],
+                "commands": ["python -m unittest"],
+                "acceptance": ["The change works."],
+                "deliverable": "A PR.",
+                "brief": "Do the work.",
+            }
+        ],
+        "integration": {"order": ["one"], "tests": ["python -m unittest"], "review": False},
+    }
+
+
+def two_unit_plan() -> dict[str, Any]:
+    plan = minimal_plan()
+    second = json.loads(json.dumps(plan["units"][0]))
+    second.update(
+        {
+            "id": "two",
+            "title": "Two unit",
+            "role": "test",
+            "isolation": "shared",
+            "write_scope": ["tests/**"],
+        }
+    )
+    plan["units"].append(second)
+    plan["integration"]["order"] = ["one", "two"]
+    return plan
 
 
 class SelectTargetTests(unittest.TestCase):
@@ -220,6 +285,511 @@ class SelectTargetTests(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn(":", lines[0])
 
+    def test_duplicate_option_ids_are_rejected(self) -> None:
+        caps = {
+            "providers": [
+                {
+                    "providerInstanceId": "opencode",
+                    "canRunChildTask": True,
+                    "canRunCrossProviderChildTask": True,
+                    "constraints": [],
+                    "models": [
+                        {
+                            "id": "opencode-go/deepseek-v4.1-flash",
+                            "options": [
+                                {"id": "variant", "values": ["low"]},
+                                {"id": "variant", "values": ["high"]},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        with temp_json(caps) as path:
+            result = run(SELECT, "--capabilities", path, "--role", "implementation", "--depth", "2")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("duplicate id", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_option_default_must_be_declared(self) -> None:
+        caps = {
+            "providers": [
+                {
+                    "providerInstanceId": "opencode",
+                    "canRunChildTask": True,
+                    "canRunCrossProviderChildTask": True,
+                    "constraints": [],
+                    "models": [
+                        {
+                            "id": "opencode-go/deepseek-v4.1-flash",
+                            "options": [
+                                {"id": "variant", "values": ["low", "high"], "default": "medium"}
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        with temp_json(caps) as path:
+            result = run(SELECT, "--capabilities", path, "--role", "implementation", "--depth", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(), "opencode:opencode-go/deepseek-v4.1-flash#variant=low"
+        )
+
+    def test_option_values_must_be_strings_or_booleans(self) -> None:
+        def caps_for(values: Any) -> dict[str, Any]:
+            return {
+                "providers": [
+                    {
+                        "providerInstanceId": "opencode",
+                        "canRunChildTask": True,
+                        "canRunCrossProviderChildTask": True,
+                        "constraints": [],
+                        "models": [
+                            {
+                                "id": "opencode-go/deepseek-v4.1-flash",
+                                "options": [{"id": "variant", "values": values}],
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        for values in ([1], [{"high": True}], [["high"]], [None]):
+            with temp_json(caps_for(values)) as path:
+                result = run(
+                    SELECT, "--capabilities", path, "--role", "implementation", "--depth", "2"
+                )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("string or boolean", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_option_membership_is_type_aware(self) -> None:
+        module = load_module("select_target_type_aware", SELECT)
+        self.assertFalse(module.declared(True, [1]))
+        self.assertFalse(module.declared(1, [True]))
+        chosen = module.choose_option(
+            {"id": "variant", "values": [True, "low"], "default": 1},
+            maximize=False,
+            depth=2,
+        )
+        self.assertEqual(chosen, ("variant", True))
+
+    def test_malformed_capabilities_are_rejected(self) -> None:
+        cases = [
+            ({"providers": {}}, "providers must be an array"),
+            (
+                {
+                    "providers": [
+                        {
+                            "providerInstanceId": "opencode",
+                            "canRunChildTask": True,
+                            "models": [{"id": "m", "options": {}}],
+                        }
+                    ]
+                },
+                "options must be an array",
+            ),
+            (
+                {
+                    "providers": [
+                        {
+                            "providerInstanceId": "opencode",
+                            "canRunChildTask": "yes",
+                            "models": [],
+                        }
+                    ]
+                },
+                "canRunChildTask must be a boolean",
+            ),
+        ]
+        for caps, message in cases:
+            with temp_json(caps) as path:
+                result = run(
+                    SELECT, "--capabilities", path, "--role", "implementation", "--depth", "2"
+                )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn(message, result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_non_finite_or_negative_estimate_is_rejected(self) -> None:
+        for value in ("NaN", "Infinity", "-Infinity", "-1"):
+            result = run(
+                SELECT,
+                "--capabilities",
+                str(CAPS),
+                "--role",
+                "review",
+                "--depth",
+                "4",
+                "--usage",
+                str(USAGE),
+                "--estimate-units",
+                value,
+                "--json",
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("--estimate-units", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_usage_numbers_must_be_finite_and_non_negative(self) -> None:
+        for remaining in (True, -1, float("nan"), float("inf")):
+            usage = {"unit": "tokens", "providers": {"opencode": {"remaining": remaining}}}
+            with temp_json(usage) as path:
+                result = run(
+                    SELECT,
+                    "--capabilities",
+                    str(CAPS),
+                    "--role",
+                    "review",
+                    "--depth",
+                    "4",
+                    "--usage",
+                    path,
+                    "--json",
+                )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("finite non-negative", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+        usage = {"unit": "tokens", "providers": {"opencode": False}}
+        with temp_json(usage) as path:
+            result = run(
+                SELECT,
+                "--capabilities",
+                str(CAPS),
+                "--role",
+                "review",
+                "--depth",
+                "4",
+                "--usage",
+                path,
+                "--json",
+            )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("finite non-negative", result.stderr)
+
+    def test_budget_boundary_allows_exact_estimate(self) -> None:
+        for remaining, status in ((2500, "ok"), (2499, "budget_exceeded")):
+            usage = {"unit": "tokens", "providers": {"opencode": {"remaining": remaining}}}
+            with temp_json(usage) as path:
+                result = run(
+                    SELECT,
+                    "--capabilities",
+                    str(CAPS),
+                    "--role",
+                    "implementation",
+                    "--depth",
+                    "1",
+                    "--usage",
+                    path,
+                    "--json",
+                )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["status"], status)
+            self.assertEqual(payload["budget"]["estimated_units"], 2500.0)
+
+    def test_pinned_target_cannot_be_escaped_by_higher_ranked_target(self) -> None:
+        common = [
+            "--capabilities",
+            str(CAPS),
+            "--role",
+            "implementation",
+            "--depth",
+            "3",
+            "--ignore-cost",
+            "--parent-provider",
+            "codex",
+            "--parent-model",
+            "gpt-6.1-sol",
+            "--json",
+        ]
+        unpinned = run(SELECT, *common)
+        self.assertEqual(unpinned.returncode, 0, unpinned.stderr)
+        self.assertEqual(
+            json.loads(unpinned.stdout)["target"]["providerInstanceId"], "codex"
+        )
+
+        pinned = run(
+            SELECT,
+            *common,
+            "--provider",
+            "opencode",
+            "--model",
+            "opencode-go/deepseek-v4.1-flash",
+        )
+        self.assertEqual(pinned.returncode, 0, pinned.stderr)
+        payload = json.loads(pinned.stdout)
+        self.assertEqual(payload["target"]["providerInstanceId"], "opencode")
+        self.assertEqual(payload["target"]["model"], "opencode-go/deepseek-v4.1-flash")
+
+    def test_unavailable_pin_never_falls_back(self) -> None:
+        cases = [
+            ["--provider", "claudeAgent"],
+            ["--provider", "codex", "--model", "missing-model"],
+            ["--provider", "opencode", "--model", "opencode-go/deepseek-v4.1-flash"],
+        ]
+        for extra in cases:
+            result = run(
+                SELECT,
+                "--capabilities",
+                str(CAPS),
+                "--role",
+                "review",
+                "--depth",
+                "4",
+                "--json",
+                *extra,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["status"], "unavailable")
+
+    def test_over_budget_pin_returns_budget_exceeded(self) -> None:
+        result = run(
+            SELECT,
+            "--capabilities",
+            str(CAPS),
+            "--role",
+            "review",
+            "--depth",
+            "4",
+            "--provider",
+            "codex",
+            "--model",
+            "gpt-6.1-sol",
+            "--usage",
+            str(USAGE),
+            "--json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "budget_exceeded")
+        self.assertNotIn("target", payload)
+
+    def test_pin_preserves_identifier_punctuation(self) -> None:
+        caps = {
+            "providers": [
+                {
+                    "providerInstanceId": "acme:edge",
+                    "canRunChildTask": True,
+                    "canRunCrossProviderChildTask": True,
+                    "constraints": [],
+                    "models": [
+                        {"id": "vendor/model.v4-1_preview@edge#build", "options": []}
+                    ],
+                }
+            ]
+        }
+        with temp_json(caps) as path:
+            result = run(
+                SELECT,
+                "--capabilities",
+                path,
+                "--provider",
+                "acme:edge",
+                "--model",
+                "vendor/model.v4-1_preview@edge#build",
+                "--role",
+                "implementation",
+                "--depth",
+                "2",
+                "--json",
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["target"]["providerInstanceId"], "acme:edge")
+        self.assertEqual(payload["target"]["model"], "vendor/model.v4-1_preview@edge#build")
+        self.assertEqual(
+            payload["canonical"], "acme:edge:vendor/model.v4-1_preview@edge#build"
+        )
+
+    def test_provider_only_pin_and_model_only_pin(self) -> None:
+        provider_pin = run(
+            SELECT,
+            "--capabilities",
+            str(CAPS),
+            "--role",
+            "implementation",
+            "--depth",
+            "2",
+            "--provider",
+            "opencode",
+            "--json",
+        )
+        self.assertEqual(provider_pin.returncode, 0, provider_pin.stderr)
+        self.assertEqual(
+            json.loads(provider_pin.stdout)["target"]["providerInstanceId"], "opencode"
+        )
+
+        model_pin = run(
+            SELECT,
+            "--capabilities",
+            str(CAPS),
+            "--role",
+            "implementation",
+            "--depth",
+            "2",
+            "--model",
+            "gpt-6-luna",
+            "--json",
+        )
+        self.assertEqual(model_pin.returncode, 0, model_pin.stderr)
+        payload = json.loads(model_pin.stdout)
+        self.assertEqual(payload["target"]["providerInstanceId"], "codex")
+        self.assertEqual(payload["target"]["model"], "gpt-6-luna")
+
+    def test_model_level_constraint_is_skipped(self) -> None:
+        caps = {
+            "providers": [
+                {
+                    "providerInstanceId": "opencode",
+                    "canRunChildTask": True,
+                    "canRunCrossProviderChildTask": True,
+                    "constraints": [],
+                    "models": [
+                        {
+                            "id": "opencode/deepseek-v4.1-flash-free",
+                            "constraints": ["rate limited"],
+                            "options": [],
+                        },
+                        {"id": "opencode-go/deepseek-v4.1-flash", "options": []},
+                    ],
+                }
+            ]
+        }
+        with temp_json(caps) as path:
+            result = run(
+                SELECT,
+                "--capabilities",
+                path,
+                "--role",
+                "implementation",
+                "--depth",
+                "2",
+                "--json",
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["target"]["model"], "opencode-go/deepseek-v4.1-flash")
+
+    def test_exclude_provider_id(self) -> None:
+        result = run(
+            SELECT,
+            "--capabilities",
+            str(CAPS),
+            "--role",
+            "implementation",
+            "--depth",
+            "2",
+            "--exclude",
+            "opencode",
+            "--json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertNotEqual(payload["target"]["providerInstanceId"], "opencode")
+
+    def test_parent_flags_must_be_paired(self) -> None:
+        result = run(
+            SELECT,
+            "--capabilities",
+            str(CAPS),
+            "--role",
+            "review",
+            "--depth",
+            "4",
+            "--parent-provider",
+            "opencode",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("together", result.stderr)
+
+    def test_malformed_role_rules_are_rejected(self) -> None:
+        base = json.loads(POLICY.read_text(encoding="utf-8"))
+        for field, value in (("allow_roles", "research"), ("allow_roles", []), ("match", "")):
+            policy = json.loads(json.dumps(base))
+            policy["role_restrictions"][0][field] = value
+            with temp_json(policy) as path:
+                result = run(
+                    SELECT,
+                    "--capabilities",
+                    str(CAPS),
+                    "--policy",
+                    path,
+                    "--role",
+                    "review",
+                    "--depth",
+                    "4",
+                    "--json",
+                )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("role_restrictions", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_malformed_web_research_patterns_are_rejected(self) -> None:
+        base = json.loads(POLICY.read_text(encoding="utf-8"))
+        for value in ("antigravity:gemini-3.8-flash", [1]):
+            policy = json.loads(json.dumps(base))
+            policy["web_research"]["models"] = value
+            with temp_json(policy) as path:
+                result = run(
+                    SELECT,
+                    "--capabilities",
+                    str(CAPS),
+                    "--policy",
+                    path,
+                    "--role",
+                    "research",
+                    "--depth",
+                    "3",
+                    "--web",
+                    "--json",
+                )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("web_research.models", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_malformed_policy_scores_are_rejected(self) -> None:
+        base = json.loads(POLICY.read_text(encoding="utf-8"))
+
+        bad_reasoning = json.loads(json.dumps(base))
+        bad_reasoning["models"]["codex:gpt-6.1-sol"]["reasoning"]["code"] = "high"
+        with temp_json(bad_reasoning) as path:
+            result = run(
+                SELECT,
+                "--capabilities",
+                str(CAPS),
+                "--policy",
+                path,
+                "--role",
+                "implementation",
+                "--depth",
+                "3",
+                "--json",
+            )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("reasoning", result.stderr)
+
+        bad_cost = json.loads(json.dumps(base))
+        bad_cost["models"]["codex:gpt-6.1-sol"]["cost_tier"] = "cheap"
+        with temp_json(bad_cost) as path:
+            result = run(
+                SELECT,
+                "--capabilities",
+                str(CAPS),
+                "--policy",
+                path,
+                "--role",
+                "implementation",
+                "--depth",
+                "3",
+                "--json",
+            )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("cost_tier", result.stderr)
+
 
 class ValidatePlanTests(unittest.TestCase):
     def test_example_plan_is_valid(self) -> None:
@@ -272,6 +842,154 @@ class ValidatePlanTests(unittest.TestCase):
             self.assertTrue(any("review" in w for w in payload["warnings"]), payload)
         finally:
             Path(path).unlink(missing_ok=True)
+
+    def test_depends_on_null_is_invalid_without_crash(self) -> None:
+        plan = minimal_plan()
+        plan["units"][0]["depends_on"] = None
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(
+            any("depends_on must be an array" in error for error in payload["errors"]), payload
+        )
+
+    def test_integration_order_non_string_entry_is_invalid_without_crash(self) -> None:
+        plan = minimal_plan()
+        plan["integration"]["order"] = [["one"]]
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(
+            any("order entries must be strings" in error for error in payload["errors"]), payload
+        )
+
+    def test_invalid_unit_id_pattern_is_rejected(self) -> None:
+        plan = minimal_plan()
+        plan["units"][0]["id"] = "One Unit!"
+        plan["integration"]["order"] = ["One Unit!"]
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(any("id must match" in error for error in payload["errors"]), payload)
+
+    def test_unknown_dependency_is_not_reported_as_cycle(self) -> None:
+        plan = minimal_plan()
+        plan["units"][0]["depends_on"] = ["missing"]
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(any("unknown dependency" in error for error in payload["errors"]), payload)
+        self.assertFalse(any("cycle" in error for error in payload["errors"]), payload)
+
+    def test_shared_write_overlap_is_rejected(self) -> None:
+        plan = two_unit_plan()
+        plan["units"][0].update({"role": "general", "isolation": "shared", "write_scope": ["src/**"]})
+        plan["units"][1].update({"role": "test", "isolation": "shared", "write_scope": ["src/core.py"]})
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(
+            any("share a shared write scope" in error for error in payload["errors"]), payload
+        )
+
+    def test_disjoint_shared_write_globs_are_allowed(self) -> None:
+        plan = two_unit_plan()
+        plan["units"][0].update({"role": "general", "isolation": "shared", "write_scope": ["src/*.py"]})
+        plan["units"][1].update({"role": "test", "isolation": "shared", "write_scope": ["src/*.js"]})
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"], payload)
+        self.assertEqual(payload["errors"], [])
+
+    def test_duplicate_dependencies_are_rejected(self) -> None:
+        plan = two_unit_plan()
+        plan["units"][1]["depends_on"] = ["one", "one"]
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(
+            any("duplicate dependency" in error for error in payload["errors"]), payload
+        )
+
+    def test_non_string_write_scope_and_commands_are_rejected(self) -> None:
+        plan = minimal_plan()
+        plan["units"][0]["write_scope"] = [1]
+        plan["units"][0]["commands"] = ["ok", 2]
+        plan["integration"]["tests"] = [1]
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(
+            any("write_scope entries must be non-empty strings" in error for error in payload["errors"]),
+            payload,
+        )
+        self.assertTrue(
+            any("commands entries must be strings" in error for error in payload["errors"]), payload
+        )
+        self.assertTrue(
+            any("integration.tests entries must be strings" in error for error in payload["errors"]),
+            payload,
+        )
+
+    def test_plan_numeric_and_boolean_fields_are_validated(self) -> None:
+        plan = minimal_plan()
+        plan["ignore_cost"] = "yes"
+        plan["fallback"] = 1
+        plan["budget"] = {
+            "unit": 5,
+            "estimated_units": float("nan"),
+            "remaining_units": True,
+            "note": [],
+        }
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        payload = json.loads(result.stdout)
+        messages = "\n".join(payload["errors"])
+        for expected in (
+            "ignore_cost must be a boolean",
+            "fallback must be a string",
+            "budget.unit must be a string",
+            "budget.estimated_units must be a finite non-negative number",
+            "budget.remaining_units must be a finite non-negative number",
+            "budget.note must be a string",
+        ):
+            self.assertIn(expected, messages)
+
+    def test_target_option_values_are_validated(self) -> None:
+        plan = minimal_plan()
+        plan["units"][0]["target"]["options"] = [
+            {"id": "reasoningEffort", "value": {"nested": True}}
+        ]
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(
+            any("value must be a scalar" in error for error in payload["errors"]), payload
+        )
+
+        plan = minimal_plan()
+        plan["units"][0]["target"]["options"] = {"reasoningEffort": ["high"]}
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(
+            any("must be a scalar" in error for error in payload["errors"]), payload
+        )
 
 
 if __name__ == "__main__":

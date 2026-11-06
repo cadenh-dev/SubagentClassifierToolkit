@@ -20,13 +20,85 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import re
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
 ROLES = {"research", "design", "implementation", "test", "review", "general"}
 ISOLATION = {"shared", "worktree"}
 MODES = {"async", "wait"}
+ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+
+
+def finite_nonnegative(value: Any) -> float | None:
+    """Return a finite non-negative number, or None when the value is invalid."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def unit_dependencies(unit: dict[str, Any]) -> list[str]:
+    """Return only the valid string dependencies, even for malformed input."""
+    depends = unit.get("depends_on")
+    if not isinstance(depends, list):
+        return []
+    return [dep for dep in depends if isinstance(dep, str) and dep.strip()]
+
+
+def normalize_scope(scope: str) -> str:
+    return scope.strip().replace("\\", "/").strip("/")
+
+
+def scope_contains(parent: str, child: str) -> bool:
+    parent = parent.strip("/")
+    child = child.strip("/")
+    return bool(parent) and (child == parent or child.startswith(parent + "/"))
+
+
+def scope_has_glob(scope: str) -> bool:
+    return any(char in scope for char in "*?[")
+
+
+def literal_scope_prefix(scope: str) -> str:
+    cuts = [scope.find(char) for char in "*?[" if char in scope]
+    cut = min(cuts) if cuts else len(scope)
+    return scope[:cut].strip("/")
+
+
+def scopes_overlap(left: str, right: str) -> bool:
+    """Conservatively detect two write scopes that can name the same path."""
+    left = normalize_scope(left)
+    right = normalize_scope(right)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+
+    left_glob = scope_has_glob(left)
+    right_glob = scope_has_glob(right)
+    if not left_glob and not right_glob:
+        return scope_contains(left, right) or scope_contains(right, left)
+    if not left_glob or not right_glob:
+        literal, pattern = (left, right) if not left_glob else (right, left)
+        return (
+            fnmatch(literal, pattern)
+            or scope_contains(literal, pattern)
+            or scope_contains(pattern, literal)
+        )
+
+    # Both are globs. Only a recursive /** scope can be shown to overlap
+    # without evaluating concrete paths.
+    if not (left.endswith("/**") or right.endswith("/**")):
+        return False
+    left_prefix = literal_scope_prefix(left)
+    right_prefix = literal_scope_prefix(right)
+    if not left_prefix or not right_prefix:
+        return False
+    return scope_contains(left_prefix, right_prefix) or scope_contains(right_prefix, left_prefix)
 
 
 def load_plan(path: Path) -> dict[str, Any]:
@@ -37,6 +109,9 @@ def load_plan(path: Path) -> dict[str, Any]:
         raise SystemExit(2)
     except json.JSONDecodeError as e:
         print(f"invalid JSON in {path}: {e}", file=sys.stderr)
+        raise SystemExit(2)
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"could not read {path}: {e}", file=sys.stderr)
         raise SystemExit(2)
     if not isinstance(data, dict):
         print("plan must be a JSON object", file=sys.stderr)
@@ -55,6 +130,27 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
     mode = plan.get("mode")
     if mode not in {"single", "delegated"}:
         errors.append("mode must be 'single' or 'delegated'")
+
+    ignore_cost = plan.get("ignore_cost")
+    if ignore_cost is not None and not isinstance(ignore_cost, bool):
+        errors.append("ignore_cost must be a boolean")
+
+    fallback = plan.get("fallback")
+    if fallback is not None and not isinstance(fallback, str):
+        errors.append("fallback must be a string")
+
+    budget = plan.get("budget")
+    if budget is not None:
+        if not isinstance(budget, dict):
+            errors.append("budget must be an object")
+        else:
+            if "unit" in budget and not isinstance(budget.get("unit"), str):
+                errors.append("budget.unit must be a string")
+            for field in ("estimated_units", "remaining_units"):
+                if field in budget and finite_nonnegative(budget.get(field)) is None:
+                    errors.append(f"budget.{field} must be a finite non-negative number")
+            if "note" in budget and not isinstance(budget.get("note"), str):
+                errors.append("budget.note must be a string")
 
     units = plan.get("units")
     if not isinstance(units, list):
@@ -78,6 +174,8 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
         if not isinstance(uid, str) or not uid:
             errors.append(f"{here}.id must be a non-empty string")
             continue
+        if not ID_PATTERN.fullmatch(uid):
+            errors.append(f"{uid}: id must match ^[a-z][a-z0-9-]{{0,63}}$")
         if uid in by_id:
             errors.append(f"duplicate unit id: {uid}")
             continue
@@ -100,9 +198,18 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
         if not isinstance(depends, list):
             errors.append(f"{uid}: depends_on must be an array")
         else:
+            seen_depends: set[str] = set()
             for dep in depends:
                 if not isinstance(dep, str):
                     errors.append(f"{uid}: depends_on entries must be strings")
+                    continue
+                if not dep.strip():
+                    errors.append(f"{uid}: depends_on entries must be non-empty strings")
+                    continue
+                if dep in seen_depends:
+                    errors.append(f"{uid}: duplicate dependency {dep!r}")
+                    continue
+                seen_depends.add(dep)
 
         isolation = unit.get("isolation")
         if isolation not in ISOLATION:
@@ -126,16 +233,42 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
                 options = target.get("options")
                 if options is not None and not isinstance(options, (dict, list)):
                     errors.append(f"{uid}: target.options must be an object or array")
+                if isinstance(options, dict):
+                    for option_id, value in options.items():
+                        if not isinstance(value, (str, bool, int, float)):
+                            errors.append(f"{uid}: target.options[{option_id!r}] must be a scalar")
                 if isinstance(options, list):
                     for j, option in enumerate(options):
                         if not isinstance(option, dict) or "id" not in option or "value" not in option:
                             errors.append(f"{uid}: target.options[{j}] needs id and value")
+                            continue
+                        if not isinstance(option.get("id"), str) or not option.get("id", "").strip():
+                            errors.append(f"{uid}: target.options[{j}].id must be a non-empty string")
+                        if not isinstance(option.get("value"), (str, bool, int, float)):
+                            errors.append(f"{uid}: target.options[{j}].value must be a scalar")
 
         write_scope = unit.get("write_scope", [])
         if not isinstance(write_scope, list):
             errors.append(f"{uid}: write_scope must be an array")
-        elif role in {"research", "review", "design"} and write_scope:
-            warnings.append(f"{uid}: {role} unit declares write_scope; confirm it needs writes")
+        else:
+            seen_scope: set[str] = set()
+            for scope in write_scope:
+                if not isinstance(scope, str) or not scope.strip():
+                    errors.append(f"{uid}: write_scope entries must be non-empty strings")
+                    continue
+                if scope in seen_scope:
+                    errors.append(f"{uid}: duplicate write_scope entry {scope!r}")
+                    continue
+                seen_scope.add(scope)
+            if role in {"research", "review", "design"} and write_scope:
+                warnings.append(f"{uid}: {role} unit declares write_scope; confirm it needs writes")
+
+        commands = unit.get("commands")
+        if commands is not None:
+            if not isinstance(commands, list):
+                errors.append(f"{uid}: commands must be an array")
+            elif any(not isinstance(command, str) for command in commands):
+                errors.append(f"{uid}: commands entries must be strings")
 
         acceptance = unit.get("acceptance")
         if not isinstance(acceptance, list) or not acceptance:
@@ -159,23 +292,25 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
 
     # Dependencies.
     for uid, unit in by_id.items():
-        deps = unit.get("depends_on", [])
-        if not isinstance(deps, list):
-            continue
-        for dep in deps:
+        for dep in unit_dependencies(unit):
             if dep == uid:
                 errors.append(f"{uid}: depends on itself")
             elif dep not in by_id:
                 errors.append(f"{uid}: unknown dependency {dep!r}")
 
-    # Cycle detection / topological order.
+    # Cycle detection / topological order. Unknown dependencies are reported
+    # above and must not masquerade as a cycle.
     done: set[str] = set()
     remaining = set(by_id)
     while remaining:
         ready = {
             uid
             for uid in remaining
-            if all(dep in done for dep in by_id[uid].get("depends_on", []) if isinstance(dep, str))
+            if all(
+                dep in done
+                for dep in unit_dependencies(by_id[uid])
+                if dep in by_id
+            )
         }
         if not ready:
             errors.append(f"dependency cycle among: {', '.join(sorted(remaining))}")
@@ -192,32 +327,69 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
         if not isinstance(order, list):
             errors.append("integration.order must be an array")
             order = []
-        if len(order) != len(set(order)):
+        string_order = [uid for uid in order if isinstance(uid, str)]
+        if len(string_order) != len(order):
+            errors.append("integration.order entries must be strings")
+        if len(string_order) != len(set(string_order)):
             errors.append("integration.order contains duplicates")
-        for uid in order:
-            if not isinstance(uid, str):
-                errors.append("integration.order entries must be strings")
-            elif uid not in by_id:
+        for uid in string_order:
+            if uid not in by_id:
                 errors.append(f"integration.order references unknown unit {uid!r}")
-        missing = [uid for uid in ids if uid not in order]
+        missing = [uid for uid in ids if uid not in string_order]
         if missing:
             errors.append(f"integration.order is missing: {', '.join(missing)}")
 
         seen: set[str] = set()
-        for uid in order:
+        for uid in string_order:
             if uid not in by_id:
                 continue
-            for dep in by_id[uid].get("depends_on", []):
-                if dep not in seen:
+            for dep in unit_dependencies(by_id[uid]):
+                if dep in by_id and dep not in seen:
                     errors.append(f"integration.order puts {uid} before its dependency {dep}")
             seen.add(uid)
 
         deps = integration.get("tests")
         if not isinstance(deps, list):
             errors.append("integration.tests must be an array")
+        elif any(not isinstance(command, str) for command in deps):
+            errors.append("integration.tests entries must be strings")
+        notes = integration.get("notes")
+        if notes is not None and not isinstance(notes, str):
+            errors.append("integration.notes must be a string")
         review = integration.get("review")
         if not isinstance(review, bool):
             errors.append("integration.review must be a boolean")
+
+        # Two children must not write the same path in a shared checkout.
+        shared_writers = [
+            (uid, unit)
+            for uid, unit in by_id.items()
+            if unit.get("isolation") == "shared"
+            and isinstance(unit.get("write_scope"), list)
+            and unit.get("write_scope")
+        ]
+        for left_index, (left_id, left_unit) in enumerate(shared_writers):
+            left_scopes = [
+                scope for scope in left_unit.get("write_scope", []) if isinstance(scope, str)
+            ]
+            for right_id, right_unit in shared_writers[left_index + 1:]:
+                right_scopes = [
+                    scope for scope in right_unit.get("write_scope", []) if isinstance(scope, str)
+                ]
+                overlap = next(
+                    (
+                        (left_scope, right_scope)
+                        for left_scope in left_scopes
+                        for right_scope in right_scopes
+                        if scopes_overlap(left_scope, right_scope)
+                    ),
+                    None,
+                )
+                if overlap is not None:
+                    errors.append(
+                        f"{left_id} and {right_id} share a shared write scope "
+                        f"({overlap[0]!r} overlaps {overlap[1]!r}); use worktrees or sequence them"
+                    )
 
         implementations = [u for u in units if isinstance(u, dict) and u.get("role") == "implementation"]
         shared_impl = [u.get("id") for u in implementations if u.get("isolation") == "shared"]
