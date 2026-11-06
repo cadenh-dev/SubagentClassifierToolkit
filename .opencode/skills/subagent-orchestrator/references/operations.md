@@ -219,9 +219,19 @@ Output and limits:
   The harness reports tracked/untracked state before and after commands, and
   fails if a command moves `HEAD`.
 - Exit codes: `0` pass, `1` fail/unverified, `2` error/blocked.
-- The harness does not append to the outcome ledger. Review the JSON, then use
-  `outcome_ledger.py` manually if the evidence warrants a record. The verdict
-  is evidence for the parent; it is not an automatic acceptance gate.
+- The harness never writes to the outcome ledger by itself. After reviewing the
+  report, use `record_verification.py` to carry the unit, role, target, options,
+  isolation, and mode into a ledger record. The caller must provide depth,
+  outcome, verification level, retry count, and review-finding count. A
+  `success` outcome also requires `--acceptance-reviewed` and a `pass` report.
+  Usage is left unknown unless supplied. The verification verdict is evidence
+  for the parent, not an automatic acceptance gate.
+
+```bash
+python3 scripts/record_verification.py --report verify.json \
+  --depth 3 --outcome partial --verification parent \
+  --retries 0 --review-findings 1
+```
 
 ## 9. Integration checklist
 

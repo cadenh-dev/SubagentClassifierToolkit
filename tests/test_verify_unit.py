@@ -204,6 +204,10 @@ class VerifyUnitTests(unittest.TestCase):
         self.assertEqual(payload["scope_violations"], [])
         self.assertEqual(payload["command_results"][0]["status"], "pass")
         self.assertEqual(payload["command_results"][0]["exit_code"], 0)
+        self.assertEqual(
+            payload["unit_details"]["target"]["model"],
+            "opencode-go/deepseek-v4.1-flash",
+        )
         self.assertFalse(payload["unit_details"]["acceptance_evaluated"])
         self.assertFalse(payload["verdict_scope"]["acceptance_prose_verified"])
         self.assertTrue(
