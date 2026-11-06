@@ -23,6 +23,8 @@ import json
 import os
 import re
 import shutil
+import stat
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -226,6 +228,128 @@ def has_binary(names: list[str]) -> tuple[bool, str | None]:
     return False, None
 
 
+PYTHON_PROBE_TIMEOUT = 5
+PYTHON_PROBE_SCRIPT = "import sys; print(sys.version_info[0])"
+PYTHON_DEFAULT_COMMAND = "python3"
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """Return True when path is the same as, or inside, root."""
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _probe_python(path: str, root: Path) -> tuple[bool, str]:
+    """Return whether a Python interpreter answers a fixed, side-effect-free probe.
+
+    Only the interpreter itself is executed, with a literal argument list in
+    isolated mode (``-I``) so repository sitecustomize/PYTHONPATH hooks do not
+    run. The repository is never asked to provide a script or binary for the
+    probe, and a candidate that resolves inside the scanned repository is
+    skipped.
+    """
+    try:
+        executable = Path(path).resolve()
+    except OSError:
+        return False, "path could not be resolved"
+    if _is_within(executable, root):
+        return False, "skipped repository-local executable"
+    try:
+        result = subprocess.run(
+            [str(executable), "-I", "-c", PYTHON_PROBE_SCRIPT],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=PYTHON_PROBE_TIMEOUT,
+            cwd=str(root),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"probe could not run ({exc.__class__.__name__})"
+    if result.returncode != 0:
+        return False, f"probe exited with status {result.returncode}"
+    output = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not output or not output[-1].isdigit():
+        return False, "probe did not report a Python version"
+    if int(output[-1]) < 3:
+        return False, "interpreter is not Python 3"
+    return True, ""
+
+
+def resolve_runtime(language: str, root: Path) -> dict[str, Any]:
+    """Resolve a runtime using PATH presence plus evidence about usability.
+
+    Python is the only language probed: a broken Microsoft Store alias or an
+    unrelated executable can be present on PATH without being a working
+    interpreter. Other tools stay PATH-only because probing arbitrary
+    compilers/tools is neither necessary nor safe here.
+    """
+    names = LANGUAGES[language]["runtime"]
+    result: dict[str, Any] = {
+        "available": False,
+        "on_path": False,
+        "path": None,
+        "command": None,
+        "rejected": [],
+    }
+    if not names:
+        return result
+
+    if language != "python":
+        for name in names:
+            found = shutil.which(name)
+            if found:
+                result.update({
+                    "available": True,
+                    "on_path": True,
+                    "path": found,
+                    "command": name,
+                })
+                return result
+        return result
+
+    for name in names:
+        found = shutil.which(name)
+        if not found:
+            continue
+        result["on_path"] = True
+        usable, reason = _probe_python(found, root)
+        if usable:
+            result.update({
+                "available": True,
+                "path": found,
+                "command": name,
+            })
+            return result
+        result["rejected"].append({
+            "command": name,
+            "path": found,
+            "reason": reason,
+        })
+        if result["path"] is None:
+            result["path"] = found
+    return result
+
+
+def runtime_label(item: dict[str, Any]) -> str:
+    if item.get("runtime_available"):
+        return "available"
+    if item.get("runtime_on_path"):
+        return "NOT USABLE"
+    return "NOT ON PATH"
+
+
+def profile_python_command(profile: dict[str, Any]) -> str:
+    for item in profile.get("languages", []):
+        if item.get("name") == "python" and item.get("runtime_available"):
+            command = item.get("runtime_command")
+            if command:
+                return str(command)
+    return PYTHON_DEFAULT_COMMAND
+
+
 def scan(root: Path, max_files: int) -> tuple[list[Path], bool]:
     files: list[Path] = []
     truncated = False
@@ -331,7 +455,7 @@ def detect_tools(root: Path, files: list[Path], text_files: dict[str, str]) -> l
     return sorted(tools.values(), key=lambda x: x["name"])
 
 
-def detect_commands(root: Path, files: list[Path]) -> list[dict[str, str]]:
+def detect_commands(root: Path, files: list[Path], python_command: str = PYTHON_DEFAULT_COMMAND) -> list[dict[str, str]]:
     commands: dict[str, str] = {}
 
     package = next((p for p in files if p.name == "package.json"), None)
@@ -360,9 +484,9 @@ def detect_commands(root: Path, files: list[Path]) -> list[dict[str, str]]:
         test_files = [p for p in python_files if p.name.startswith("test_") or p.name.endswith("_test.py")]
         test_text = "\n".join(read_text(p, 200_000).lower() for p in test_files[:200])
         if "pytest" in py_text or any(p.name == "pytest.ini" or p.name == "conftest.py" for p in files):
-            commands["python3 -m pytest"] = "pytest dependency or config"
+            commands[f"{python_command} -m pytest"] = "pytest dependency or config"
         if "import unittest" in test_text or "from unittest" in test_text:
-            commands["python3 -m unittest discover -s tests -v"] = "unittest test files"
+            commands[f"{python_command} -m unittest discover -s tests -v"] = "unittest test files"
         if "ruff" in py_text:
             commands["ruff check ."] = "ruff dependency"
         if "mypy" in py_text:
@@ -415,13 +539,18 @@ def build_profile(root: Path, max_files: int = 50000) -> dict[str, Any]:
 
     frameworks = detect_frameworks(root, files)
     tools = detect_tools(root, files, text_files)
-    commands = detect_commands(root, files)
+    runtime_cache: dict[str, dict[str, Any]] = {}
+
+    def runtime_for(lang: str) -> dict[str, Any]:
+        if lang not in runtime_cache:
+            runtime_cache[lang] = resolve_runtime(lang, root)
+        return runtime_cache[lang]
 
     languages: list[dict[str, Any]] = []
     for lang, count in counts.most_common():
         manifest_hits = sorted(set(manifests.get(lang, [])))
         framework_hits = [f["name"] for f in frameworks if f["language"] == lang]
-        runtime_available, runtime_path = has_binary(LANGUAGES[lang]["runtime"])
+        runtime = runtime_for(lang)
         if manifest_hits and count >= 3:
             confidence = "high"
         elif manifest_hits or count >= 3:
@@ -434,8 +563,11 @@ def build_profile(root: Path, max_files: int = 50000) -> dict[str, Any]:
             "examples": examples[lang],
             "manifests": manifest_hits,
             "frameworks": framework_hits,
-            "runtime_available": runtime_available,
-            "runtime_path": runtime_path,
+            "runtime_available": runtime["available"],
+            "runtime_path": runtime["path"],
+            "runtime_command": runtime["command"],
+            "runtime_on_path": runtime["on_path"],
+            "runtime_rejected": runtime["rejected"],
             "confidence": confidence,
         })
 
@@ -443,18 +575,30 @@ def build_profile(root: Path, max_files: int = 50000) -> dict[str, Any]:
     for lang, paths in manifests.items():
         if any(item["name"] == lang for item in languages):
             continue
+        runtime = runtime_for(lang)
         languages.append({
             "name": lang,
             "files": 0,
             "examples": [],
             "manifests": sorted(set(paths)),
             "frameworks": [f["name"] for f in frameworks if f["language"] == lang],
-            "runtime_available": has_binary(LANGUAGES[lang]["runtime"])[0],
-            "runtime_path": has_binary(LANGUAGES[lang]["runtime"])[1],
+            "runtime_available": runtime["available"],
+            "runtime_path": runtime["path"],
+            "runtime_command": runtime["command"],
+            "runtime_on_path": runtime["on_path"],
+            "runtime_rejected": runtime["rejected"],
             "confidence": "medium" if paths else "low",
         })
 
     languages.sort(key=lambda x: (x["files"], len(x["manifests"])), reverse=True)
+
+    python_item = next((item for item in languages if item["name"] == "python"), None)
+    python_command = (
+        python_item["runtime_command"]
+        if python_item and python_item["runtime_available"] and python_item["runtime_command"]
+        else PYTHON_DEFAULT_COMMAND
+    )
+    commands = detect_commands(root, files, python_command)
     primary = languages[0]["name"] if languages else None
     top_files = languages[0]["files"] if languages else 0
     total_code = sum(item["files"] for item in languages) or 1
@@ -485,8 +629,21 @@ def build_profile(root: Path, max_files: int = 50000) -> dict[str, Any]:
     if ambiguous:
         warnings.append("polyglot project: route by path/extension, not by repository root")
     for item in languages:
-        if not item["runtime_available"]:
+        if not item["runtime_on_path"]:
             warnings.append(f"{item['name']} is used by the project but its runtime is not on PATH")
+        elif not item["runtime_available"]:
+            warnings.append(
+                f"{item['name']} is on PATH but no usable runtime answered a fixed probe; "
+                "do not rely on it until the installation is repaired"
+            )
+        else:
+            rejected = item.get("runtime_rejected") or []
+            if rejected:
+                names = ", ".join(str(entry["command"]) for entry in rejected)
+                warnings.append(
+                    f"{item['name']}: {names} on PATH is not usable; using "
+                    f"{item['runtime_command']} for generated commands"
+                )
 
     profile = {
         "schema_version": 1,
@@ -536,7 +693,7 @@ def render_skill(name: str, profile: dict[str, Any], out_dir: Path) -> str:
             ", ".join(item["manifests"][:4]) or "—",
             ", ".join(item["frameworks"][:4]) or "—",
             item["confidence"],
-            "available" if item["runtime_available"] else "NOT ON PATH",
+            runtime_label(item),
         ]))
     if not profile["languages"]:
         lines.append(table_row(["—", "0", "—", "—", "low", "unknown"]))
@@ -584,7 +741,7 @@ def render_skill(name: str, profile: dict[str, Any], out_dir: Path) -> str:
     lines += [
         "- Do not introduce a new language, engine, package manager, or build system without approval.",
         "- Prefer the project's existing path/manifest evidence over a global default.",
-        "- If the runtime column says `NOT ON PATH`, do not claim the tool is available; report the gap.",
+        "- If the runtime column says `NOT ON PATH` or `NOT USABLE`, do not claim the tool is available; report the gap.",
         "- Keep generated evidence intact. Edit the builder or re-run it rather than hand-editing counts.",
         "- For a delegated task, pass the selected toolchain and command in the brief; do not make the child re-detect the stack.",
         "",
@@ -616,7 +773,7 @@ def render_skill(name: str, profile: dict[str, Any], out_dir: Path) -> str:
         "Re-run the project-classifier builder after a stack change:",
         "",
         "```bash",
-        f"python3 <path-to-project-classifier>/scripts/build_project_classifier.py --root . --out {out_dir.as_posix()} --force",
+        f"{profile_python_command(profile)} <path-to-project-classifier>/scripts/build_project_classifier.py --root . --out {out_dir.as_posix()} --force",
         "```",
         "",
     ]
@@ -632,7 +789,13 @@ def render_evidence(profile: dict[str, Any]) -> str:
         lines.append(f"- Files: {item['files']}")
         lines.append(f"- Manifests: {', '.join(item['manifests']) or '—'}")
         lines.append(f"- Frameworks: {', '.join(item['frameworks']) or '—'}")
-        lines.append(f"- Runtime on PATH: {item['runtime_available']} ({item['runtime_path'] or '—'})")
+        lines.append(f"- Runtime on PATH: {item.get('runtime_on_path', item['runtime_available'])} ({item['runtime_path'] or '—'})")
+        lines.append(f"- Runtime usable: {item['runtime_available']} (command: {item.get('runtime_command') or '—'})")
+        for rejected in item.get("runtime_rejected") or []:
+            lines.append(
+                f"- Rejected runtime candidate: `{rejected['command']}` at "
+                f"`{rejected['path']}` ({rejected['reason']})"
+            )
         if item["examples"]:
             lines.append("- Examples:")
             lines += [f"  - `{ex}`" for ex in item["examples"]]
@@ -649,17 +812,135 @@ def render_evidence(profile: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+GENERATED_ARTIFACTS = (
+    Path("SKILL.md"),
+    Path("data") / "project-profile.json",
+    Path("references") / "evidence.md",
+)
+
+
+def _is_link(path: Path) -> bool:
+    """Return True for a symlink or (where supported) a Windows junction."""
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        if callable(is_junction) and is_junction():
+            return True
+        if os.name == "nt":
+            try:
+                info = os.lstat(path)
+            except FileNotFoundError:
+                return False
+            tag = getattr(info, "st_reparse_tag", 0)
+            reparse_tags = {
+                value for value in (
+                    getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0),
+                    getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0),
+                )
+                if value
+            }
+            if tag and tag in reparse_tags:
+                return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # An unreadable path cannot be validated safely.
+        return True
+    return False
+
+
+def _validate_output_destination(out_dir: Path) -> str | None:
+    """Validate the destination before any mutation. Return an error message or None."""
+    if _is_link(out_dir):
+        return f"refusing to write through a symbolic link or junction: {out_dir}"
+    if out_dir.exists() and not out_dir.is_dir():
+        return f"refusing to replace a file with a generated skill directory: {out_dir}"
+    for relative in GENERATED_ARTIFACTS:
+        target = out_dir / relative
+        if _is_link(target):
+            return f"refusing to replace a linked generated artifact: {target}"
+        if target.exists() and target.is_dir():
+            return f"refusing to replace a directory with a generated file: {target}"
+        parent = target.parent
+        if _is_link(parent):
+            return f"refusing to write through a linked directory: {parent}"
+        if parent.exists() and not parent.is_dir():
+            return f"refusing to write next to a non-directory artifact: {parent}"
+    return None
+
+
+def _looks_generated_skill(out_dir: Path) -> bool:
+    """Recognize output written by this builder, including older generated skills.
+
+    Recognition requires all managed artifacts and a consistent generated
+    signature. This prevents --force from treating an arbitrary directory that
+    merely has a SKILL.md (or a malformed partial output) as replaceable.
+    """
+    for relative in GENERATED_ARTIFACTS:
+        target = out_dir / relative
+        if not target.is_file() or _is_link(target):
+            return False
+
+    skill_text = read_text(out_dir / "SKILL.md")
+    frontmatter = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", skill_text, re.S)
+    if not frontmatter:
+        return False
+    if not re.search(r"^name:\s*[a-z0-9]+(?:-[a-z0-9]+)*\s*$", frontmatter.group(1), re.M):
+        return False
+    if "Generated from repository evidence on " not in skill_text:
+        return False
+    if "This is a **project-local** router." not in skill_text:
+        return False
+
+    try:
+        generated_profile = json.loads(read_text(out_dir / "data" / "project-profile.json"))
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(generated_profile, dict) or generated_profile.get("schema_version") != 1:
+        return False
+    if not all(key in generated_profile for key in ("generated_at", "root", "languages", "commands", "scan")):
+        return False
+    if not isinstance(generated_profile["languages"], list) or not isinstance(generated_profile["commands"], list):
+        return False
+
+    evidence_text = read_text(out_dir / "references" / "evidence.md")
+    if not evidence_text.startswith("# Evidence\n"):
+        return False
+    if "\nGenerated: " not in evidence_text:
+        return False
+    return True
+
+
 def write_skill(name: str, profile: dict[str, Any], out_dir: Path, force: bool) -> None:
+    problem = _validate_output_destination(out_dir)
+    if problem:
+        print(problem, file=sys.stderr)
+        raise SystemExit(2)
+
     if out_dir.exists():
         if not force:
-            print(f"output exists: {out_dir} (use --force to replace)", file=sys.stderr)
+            print(f"output exists: {out_dir} (use --force to refresh a generated skill)", file=sys.stderr)
             raise SystemExit(2)
-        shutil.rmtree(out_dir)
-    (out_dir / "data").mkdir(parents=True)
-    (out_dir / "references").mkdir(parents=True)
-    (out_dir / "SKILL.md").write_text(render_skill(name, profile, out_dir), encoding="utf-8")
-    (out_dir / "data" / "project-profile.json").write_text(json.dumps(profile, indent=2), encoding="utf-8")
-    (out_dir / "references" / "evidence.md").write_text(render_evidence(profile), encoding="utf-8")
+        if not _looks_generated_skill(out_dir):
+            print(
+                f"refusing to replace unrelated directory {out_dir}: "
+                "it is not a generated project-classifier skill",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
+    # Render everything before mutating the destination. Managed artifacts are
+    # overwritten in place; unrelated files in a generated skill are preserved.
+    skill_text = render_skill(name, profile, out_dir)
+    profile_text = json.dumps(profile, indent=2)
+    evidence_text = render_evidence(profile)
+
+    (out_dir / "data").mkdir(parents=True, exist_ok=True)
+    (out_dir / "references").mkdir(parents=True, exist_ok=True)
+    (out_dir / "SKILL.md").write_text(skill_text, encoding="utf-8")
+    (out_dir / "data" / "project-profile.json").write_text(profile_text, encoding="utf-8")
+    (out_dir / "references" / "evidence.md").write_text(evidence_text, encoding="utf-8")
 
 
 def main() -> int:
@@ -667,7 +948,7 @@ def main() -> int:
     ap.add_argument("--root", default=".")
     ap.add_argument("--out", help="output skill directory; default <root>/.opencode/skills/<name>")
     ap.add_argument("--name", help="skill name; default <project-slug>-tool-router")
-    ap.add_argument("--force", action="store_true", help="replace an existing generated skill")
+    ap.add_argument("--force", action="store_true", help="refresh an existing generated skill, preserving unrelated files")
     ap.add_argument("--max-files", type=int, default=50000)
     ap.add_argument("--dry-run", action="store_true", help="print the profile without writing")
     ap.add_argument("--json", action="store_true", help="print the profile after writing")
@@ -681,9 +962,13 @@ def main() -> int:
     if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name) or len(name) > 64:
         print(f"invalid skill name {name!r}; use lowercase letters, digits, and single hyphens (max 64)", file=sys.stderr)
         return 2
-    out_dir = Path(args.out).resolve() if args.out else root / ".opencode" / "skills" / name
-    if out_dir == root or str(root).startswith(str(out_dir) + os.sep):
-        print(f"refusing to write a generated skill over the project root: {out_dir}", file=sys.stderr)
+    raw_out = Path(args.out).expanduser() if args.out else root / ".opencode" / "skills" / name
+    if _is_link(raw_out):
+        print(f"refusing to write through a symbolic link or junction: {raw_out}", file=sys.stderr)
+        return 2
+    out_dir = raw_out.resolve()
+    if out_dir == root or out_dir in root.parents:
+        print(f"refusing to replace the project root or an ancestor: {out_dir}", file=sys.stderr)
         return 2
     if args.max_files < 1:
         print("--max-files must be positive", file=sys.stderr)

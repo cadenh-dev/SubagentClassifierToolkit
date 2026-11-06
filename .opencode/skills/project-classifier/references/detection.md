@@ -36,7 +36,19 @@ A manifest-only language is still listed; it may be a build wrapper or an empty 
 | Package managers | lockfiles |
 | Build tools | Maven, Gradle, CMake, Make, Cargo, Go, .NET manifests |
 
-`available` means the command is on `PATH`. It does not mean the project's version is installed or configured correctly.
+`available` means the command is on `PATH` for non-Python toolchains. It does not mean the project's version is installed or configured correctly.
+
+## Runtime usability
+
+PATH presence is not the same as a working runtime. On Windows a `python3` App Execution Alias can be present while printing "Python was not found"; the same gap can occur with shims or stale symlinks.
+
+- The builder probes Python candidates (`python3`, then `python`) with the fixed isolated-mode argument list `-I -c "import sys; print(sys.version_info[0])"`, a 5 second timeout, and no repository input. Isolated mode prevents repository `sitecustomize`, `PYTHONPATH`, or user site hooks from running.
+- A candidate that resolves inside the scanned repository is skipped rather than executed.
+- The first usable Python 3 interpreter supplies the command token (`python3` or `python`) used for pytest/unittest commands and the refresh snippet.
+- If no candidate is usable, generated commands retain the portable `python3` default and the profile reports `NOT USABLE` (found on PATH but failed the probe) or `NOT ON PATH` (not found).
+- Other languages and tools remain PATH-only; the builder does not execute them.
+
+The profile records `runtime_on_path`, `runtime_available` (usable), `runtime_path`, `runtime_command`, and rejected candidates with reasons. This proves only that the interpreter answers a version probe; it does not prove project dependencies, virtual environments, or versions are correct.
 
 ## Commands
 
