@@ -57,7 +57,7 @@ Review:
 - `primary_language` and `ambiguous`
 - per-language file counts and manifests
 - frameworks and engines
-- runtime availability (`available` vs `NOT ON PATH`)
+- runtime usability (`available` vs `NOT USABLE` vs `NOT ON PATH`)
 - warnings
 
 ### 3. Resolve ambiguity before writing
@@ -79,7 +79,7 @@ python3 scripts/build_project_classifier.py \
   --out .opencode/skills/<project>-tool-router
 ```
 
-Use `--force` only when replacing a previously generated router. The builder refuses to overwrite the project root. It removes the target directory on `--force`, so do not put hand-written content inside a generated skill.
+Use `--force` only when refreshing a previously generated router. The builder refuses the project root, any ancestor of it, symlink/junction destinations, and directories it cannot recognize as generated output. A legitimate refresh overwrites only `SKILL.md`, `data/project-profile.json`, and `references/evidence.md`; unrelated files inside the generated directory are preserved. Do not store hand-written content that shadows those managed paths.
 
 Default output is `<root>/.opencode/skills/<project-slug>-tool-router/`.
 
@@ -169,5 +169,7 @@ Do not switch stacks or add a new framework.
 - Detection is heuristic, not a build-system parser.
 - It does not run tests or builds.
 - It does not inspect package contents or resolve dependency versions.
-- It does not prove a binary works; it only checks PATH.
+- For Python, it verifies that the interpreter answers a fixed `-c` version probe, so a Microsoft Store alias or other broken `python3` on PATH is reported as `NOT USABLE` and the working `python` fallback is used in generated commands.
+- For other languages and tools it only checks PATH; `available` still does not prove a compiler or tool works.
+- Runtime probes never execute repository-provided scripts or binaries, skip candidates that resolve inside the scanned repository, and use a timeout.
 - Monorepos with many independent stacks may need one generated router per subproject. Use `--root packages/api` and a scoped output.
