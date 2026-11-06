@@ -326,6 +326,8 @@ class VerifyUnitTests(unittest.TestCase):
         git_ok(other, "init", "-q")
         git_metadata = self.repo / ".git"
         for entry in git_metadata.rglob("*"):
+            if entry.is_dir():
+                continue
             try:
                 os.chmod(entry, stat.S_IWRITE | stat.S_IREAD)
             except OSError:
