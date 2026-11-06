@@ -4,30 +4,36 @@ This is the long form of Phases 5–7 in `SKILL.md`.
 
 ## 1. Choose the deployment mechanism
 
-| Need | Mechanism |
-|---|---|
-| Cross-provider model | `delegate_task` with `target` |
-| Non-default model options | `delegate_task` with `target.options` |
-| Separate checkout or PR | `delegate_task` with `isolation: "worktree"` |
-| Background work | `delegate_task` with `mode: "async"` |
-| Read-only research/review | `delegate_task` with `isolation: "shared"` |
-| Same provider/model/settings and finishes in this turn | Native `subagent` tool, if available |
-| User-requested new top-level thread | `t3_thread_launch`, not a subagent |
+Choose in this order:
 
-Do not use `t3_thread_launch` as a subagent. It creates a top-level thread, not a child tied to this task.
+1. **Native child tool** only when all are true:
+   - the child runs on the parent's provider;
+   - that provider exposes a native child mechanism;
+   - the child needs no target, model, or option override;
+   - the work finishes in this turn.
+2. **`delegate_task`** otherwise:
+   - another provider;
+   - any requested target or options;
+   - a worktree or separate checkout;
+   - background/async work;
+   - work that will outlive this turn.
+3. **`t3_thread_launch`** only when the user explicitly asks for a new top-level thread.
+
+Do not infer native support from `features.appOwnedSubagents`; that field describes app support, not a callable tool. Do not use `t3_thread_launch` as a subagent: it creates a top-level thread, not a child tied to this task.
 
 ## 2. Isolation
 
 ### Shared
 
-Use when the child is read-only or the work is small and coordinated:
+Shared isolation is **read-only**:
 
 - research
 - review
 - read-only investigation
-- one implementation child when no other child is writing
 
-Risks: two shared children can edit the same files and race. If more than one child writes, switch to worktrees.
+Any child that writes — including a single implementation child — uses a worktree. A shared writer can mix edits into the parent checkout and is unsafe when the parent has uncommitted work. A direct instruction to edit the parent checkout is an explicit exception: confirm the scope and risk first, and never infer it from "use subagents."
+
+Risks: two shared children can edit the same files and race. If any child writes, use worktrees.
 
 ### Worktree
 
@@ -64,7 +70,7 @@ Start with the smallest number that exposes real parallelism:
 | Test environments | 2–4 |
 | Max allowed by `maxBatchThreads` | Do not use it just because it exists |
 
-More children mean more token burn, more review, and more merge conflicts. The parent is the bottleneck; do not outsource integration.
+More children mean more token burn, more review, and more merge conflicts. The parent is the bottleneck; keep integration in the parent unless parent writes are forbidden, in which case delegate integration explicitly as its own worktree unit.
 
 ## 5. A supervision table
 
@@ -82,7 +88,9 @@ Update it on each wake. Do not poll.
 
 ### Completion
 
-Call `task_status` with the `taskId`. Read:
+After launching async work, continue independent local work; when nothing remains, end the turn. When a wake arrives, follow its `next` instruction. Call `task_status` only when the wake asks for status detail or the result is otherwise unread; if the wake reports completion or says to end, process the result and end the turn. Do not poll, sleep, schedule a wakeup, or set a watcher to wait for a child.
+
+A status read returns:
 
 - `status` — completed, failed, cancelled, interrupted.
 - `workState` — `working`, `waiting_for_children`, `result_available`. A finished turn with live child work is not done.
@@ -91,6 +99,17 @@ Call `task_status` with the `taskId`. Read:
 - `latestTerminalStatus`.
 
 Then read the child thread with `t3_thread_read` if you need the full result. Reading marks it delivered.
+
+### Review recheck
+
+A new review or recheck is a new `delegate_task`, never a message to a finished reviewer thread. The recheck brief includes:
+
+- the prior findings with their status;
+- the fix commit and diff range;
+- the original acceptance criteria;
+- the same write scope (normally none).
+
+This keeps the recheck independent and prevents stale context from being mistaken for a fresh review.
 
 ### Question
 
@@ -107,7 +126,16 @@ If the question invalidates the unit, cancel the task instead of answering.
 
 ### Rate limit
 
-Mark the target cooling down. Choose the next eligible target. Do not immediately retry the same model; a 429 usually means wait, not retry.
+Mark the target cooling down. If it was user-pinned, stop and report `UNAVAILABLE`; otherwise choose the next eligible target. Do not immediately retry the same model; a 429 usually means wait, not retry.
+
+### Authentication failure
+
+A 401, 403, or sign-in prompt is not the same as an unavailable target.
+
+- Report `authentication required for <provider>`.
+- Stop that unit; do not silently reroute or describe the target as unavailable.
+- Retry only after the user authenticates, or after the user explicitly authorizes a different target.
+- If the target was user-pinned, keep it pinned across the retry.
 
 ### Wrong scope
 
@@ -121,10 +149,10 @@ Reject or revert out-of-scope files. Do not merge a child that ignored its write
   PR <full URL>, head <SHA>, checks and reviews <state>.
   ```
 
-- The parent calls `link_pull_request` for each PR it owns, as soon as the PR exists. One call per PR, full URL; do not batch them.
+- The parent links each PR it owns as soon as the PR exists. Use `link_pull_request` for one PR or `link_pull_requests` for several; every entry is a full URL.
 - A child never watches a PR, even if the brief says "babysit." The parent watches only when asked or when the remaining work is waiting on checks/reviews.
 - If a PR is stacked, describe the base branch and order. Do not rebase a child's branch without telling it.
-- If multiple PRs conflict, merge in dependency order and run the full test suite after each merge.
+- If multiple PRs conflict, the parent or a delegated integration unit merges in dependency order and runs the full test suite after each merge.
 
 ## 8. Integration checklist
 
@@ -132,12 +160,14 @@ Before accepting a unit:
 
 - [ ] Diff limited to the declared write scope.
 - [ ] Acceptance criteria met and independently checked.
-- [ ] Tests run by the parent or exact child output inspected.
+- [ ] Tests run by the parent or a delegated integrator, or exact child output inspected.
 - [ ] No secrets, debug artifacts, or unrelated formatting.
 - [ ] Commit message and branch name are sensible.
 - [ ] PR base is correct and checks are passing or explained.
 - [ ] Risks and follow-ups are recorded.
 - [ ] Remaining usage updated if the provider reports actual usage; otherwise the snapshot is marked stale.
+- [ ] Outcome record appended with `verification: "parent"` only if the parent actually verified the result.
+- [ ] Any user-named target was used as requested, or the conflict was reported instead of silently substituted.
 
 Before declaring the whole task done:
 
@@ -174,7 +204,9 @@ Do not cancel a child just because a wait timed out. It may still be working.
 | One subagent per file | Token burn, merge conflicts, no coherence | One unit per outcome |
 | Multiple writers in one shared checkout | Races, lost edits | Worktrees or sequence |
 | "Look at the repo" brief | Guessing, scope creep | Objective + scope + acceptance |
-| Polling `task_status` | Wasted turns, blocked parent | Wait for the completion wake |
+| Polling `task_status` | Wasted turns, blocked parent | Wait for the completion wake and follow its `next` |
+| Sending a recheck to a finished reviewer | Stale context, no fresh review | New `delegate_task` with findings and fixes |
+| Rerouting a user-pinned target silently | User gets a different model | Stop and report the exact reason |
 | Nested subagents by default | Unbounded fan-out | Child does the work itself |
 | Child watches a PR | Duplicate watchers, stale decisions | Parent watches |
 | Premium model for mechanical edits | Cost with no quality gain | Cost mode, lower effort |
@@ -187,14 +219,14 @@ Do not cancel a child just because a wait timed out. It may still be working.
 ## 12. Minimal parent loop
 
 ```text
-1. Classify the task. If it is small, do it.
-2. Read orchestrator_capabilities.
+1. Classify the task. If it is small and parent execution is allowed, do it.
+2. Read orchestrator_capabilities once for this thread.
 3. Split into 2–4 units with dependencies and write scopes.
-4. Select one target per unit.
+4. Select one target per unit, honoring any user pin exactly.
 5. Write one brief per unit.
-6. Launch worktree implementations and shared research/review.
-7. Continue local work until a completion wake.
-8. On wake: task_status -> read result -> verify diff/tests.
-9. Integrate, link PRs, run full suite.
-10. Report targets, units, tests, PRs, risks.
+6. Launch worktree implementations and shared read-only research/review.
+7. Continue independent work; end the turn when nothing remains; do not poll.
+8. On wake: follow next; read status/result if directed; verify diff/tests.
+9. Integrate, link PRs, run full suite. Delegate integration if parent writes are forbidden.
+10. Record the outcome and report targets, units, tests, PRs, risks.
 ```

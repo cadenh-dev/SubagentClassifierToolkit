@@ -546,6 +546,123 @@ class SelectTargetTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["status"], "unavailable")
 
+    def test_option_pin_overrides_depth_choice(self) -> None:
+        result = run(
+            SELECT,
+            "--capabilities",
+            str(CAPS),
+            "--role",
+            "implementation",
+            "--depth",
+            "2",
+            "--provider",
+            "opencode",
+            "--model",
+            "opencode-go/deepseek-v4.1-flash",
+            "--option",
+            "variant=max",
+            "--json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["target"]["options"], [{"id": "variant", "value": "max"}])
+        self.assertEqual(
+            payload["canonical"],
+            "opencode:opencode-go/deepseek-v4.1-flash#variant=max",
+        )
+
+    def test_undeclared_option_pin_is_unavailable(self) -> None:
+        for extra in (
+            ["--option", "variant=ultra"],
+            ["--option", "missing=high"],
+            ["--option", "variant="],
+        ):
+            result = run(
+                SELECT,
+                "--capabilities",
+                str(CAPS),
+                "--role",
+                "implementation",
+                "--depth",
+                "2",
+                "--json",
+                *extra,
+            )
+            if extra == ["--option", "variant="]:
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("--option", result.stderr)
+                continue
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["status"], "unavailable")
+
+    def test_huge_policy_number_is_rejected_without_traceback(self) -> None:
+        base = json.loads(POLICY.read_text(encoding="utf-8"))
+        base["models"]["codex:gpt-6.1-sol"]["cost_tier"] = 10**400
+        with temp_json(base) as path:
+            result = run(
+                SELECT,
+                "--capabilities",
+                str(CAPS),
+                "--policy",
+                path,
+                "--role",
+                "implementation",
+                "--depth",
+                "3",
+                "--json",
+            )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("cost_tier", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_huge_json_integer_is_rejected_without_traceback(self) -> None:
+        try:
+            int("9" * 5000)
+        except ValueError:
+            pass
+        else:
+            self.skipTest("this Python has no integer string conversion limit")
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write('{"providers": [], "junk": ' + "9" * 5000 + "}")
+            path = handle.name
+        try:
+            result = run(
+                SELECT,
+                "--capabilities",
+                path,
+                "--role",
+                "implementation",
+                "--depth",
+                "3",
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_option_pin_validation(self) -> None:
+        for extra, message in (
+            (["--option", "variant"], "--option"),
+            (["--option", "variant=high", "--option", "variant=max"], "duplicate"),
+            (["--option", "variant=high", "--no-options"], "no-options"),
+        ):
+            result = run(
+                SELECT,
+                "--capabilities",
+                str(CAPS),
+                "--role",
+                "implementation",
+                "--depth",
+                "2",
+                *extra,
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn(message, result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
     def test_over_budget_pin_returns_budget_exceeded(self) -> None:
         result = run(
             SELECT,
@@ -990,6 +1107,131 @@ class ValidatePlanTests(unittest.TestCase):
         self.assertTrue(
             any("must be a scalar" in error for error in payload["errors"]), payload
         )
+
+    def test_malformed_enum_types_are_errors_without_traceback(self) -> None:
+        cases = [
+            ("mode", []),
+            ("role", {}),
+            ("isolation", []),
+            ("unit_mode", {}),
+        ]
+        for field, value in cases:
+            with self.subTest(field=field):
+                plan = two_unit_plan()
+                if field == "mode":
+                    plan["mode"] = value
+                elif field == "role":
+                    plan["units"][0]["role"] = value
+                elif field == "isolation":
+                    plan["units"][0]["isolation"] = value
+                else:
+                    plan["units"][0]["mode"] = value
+                with temp_json(plan) as path:
+                    result = run(VALIDATE, "--plan", path, "--json")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                payload = json.loads(result.stdout)
+                self.assertTrue(payload["errors"])
+
+    def test_single_mode_target_is_still_validated(self) -> None:
+        plan = minimal_plan()
+        plan["mode"] = "single"
+        plan["units"][0]["target"]["bogus"] = True
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(
+            any("target has unknown key 'bogus'" in error for error in payload["errors"]),
+            payload,
+        )
+
+    def test_simple_glob_overlaps_are_rejected(self) -> None:
+        cases = [
+            ("src/*", "src/*.py"),
+            ("**/*.py", "src/**"),
+            ("src/*_test.py", "src/*.py"),
+            ("src//a.py", "src/a.py"),
+            ("src/../src/a.py", "src/a.py"),
+            ("src/a*", "src/ab*"),
+            ("src/*.py", "src/*.[p]y"),
+        ]
+        for left, right in cases:
+            with self.subTest(left=left, right=right):
+                plan = two_unit_plan()
+                plan["units"][0].update(
+                    {"role": "general", "isolation": "shared", "write_scope": [left]}
+                )
+                plan["units"][1].update(
+                    {"role": "test", "isolation": "shared", "write_scope": [right]}
+                )
+                with temp_json(plan) as path:
+                    result = run(VALIDATE, "--plan", path, "--json")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                payload = json.loads(result.stdout)
+                self.assertTrue(
+                    any(
+                        "share a shared write scope" in error
+                        for error in payload["errors"]
+                    ),
+                    payload,
+                )
+
+    def test_plan_with_bom_is_valid(self) -> None:
+        plan = minimal_plan()
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8-sig"
+        ) as handle:
+            json.dump(plan, handle)
+            path = handle.name
+        try:
+            result = run(VALIDATE, "--plan", path, "--json")
+        finally:
+            Path(path).unlink(missing_ok=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)["ok"])
+
+    def test_huge_budget_number_is_rejected_without_traceback(self) -> None:
+        plan = minimal_plan()
+        plan["budget"] = {"estimated_units": 10**400}
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(
+            any(
+                "budget.estimated_units must be a finite non-negative number" in error
+                for error in payload["errors"]
+            ),
+            payload,
+        )
+
+    def test_unknown_keys_are_rejected(self) -> None:
+        plan = minimal_plan()
+        plan["goal_typo"] = "x"
+        plan["budget"] = {"estimated_units": 1, "budget_typo": 2}
+        plan["units"][0]["write_scopes"] = ["src/**"]
+        plan["units"][0]["target"]["reasoning"] = "high"
+        plan["units"][0]["target"]["options"] = [
+            {"id": "reasoningEffort", "value": "high", "extra": True}
+        ]
+        plan["integration"]["test"] = ["python -m unittest"]
+        with temp_json(plan) as path:
+            result = run(VALIDATE, "--plan", path, "--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        payload = json.loads(result.stdout)
+        messages = "\n".join(payload["errors"])
+        for expected in (
+            "unknown top-level key 'goal_typo'",
+            "budget: unknown key 'budget_typo'",
+            "units[0]: unknown key 'write_scopes'",
+            "target has unknown key 'reasoning'",
+            "target.options[0] has unknown key 'extra'",
+            "integration: unknown key 'test'",
+        ):
+            self.assertIn(expected, messages)
 
 
 if __name__ == "__main__":

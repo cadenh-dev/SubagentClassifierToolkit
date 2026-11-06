@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import posixpath
 import re
 import sys
 from fnmatch import fnmatch
@@ -31,13 +32,36 @@ ROLES = {"research", "design", "implementation", "test", "review", "general"}
 ISOLATION = {"shared", "worktree"}
 MODES = {"async", "wait"}
 ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+TOP_LEVEL_KEYS = {"goal", "mode", "ignore_cost", "budget", "units", "integration", "fallback"}
+UNIT_KEYS = {
+    "id",
+    "title",
+    "role",
+    "objective",
+    "depends_on",
+    "isolation",
+    "mode",
+    "target",
+    "write_scope",
+    "acceptance",
+    "commands",
+    "deliverable",
+    "brief",
+}
+TARGET_KEYS = {"providerInstanceId", "model", "options"}
+OPTION_KEYS = {"id", "value"}
+BUDGET_KEYS = {"unit", "estimated_units", "remaining_units", "note"}
+INTEGRATION_KEYS = {"order", "tests", "review", "notes"}
 
 
 def finite_nonnegative(value: Any) -> float | None:
     """Return a finite non-negative number, or None when the value is invalid."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
     return number if math.isfinite(number) and number >= 0 else None
 
 
@@ -50,7 +74,11 @@ def unit_dependencies(unit: dict[str, Any]) -> list[str]:
 
 
 def normalize_scope(scope: str) -> str:
-    return scope.strip().replace("\\", "/").strip("/")
+    text = scope.strip().replace("\\", "/")
+    if not text:
+        return ""
+    normalized = posixpath.normpath(text)
+    return "" if normalized == "." else normalized.strip("/")
 
 
 def scope_contains(parent: str, child: str) -> bool:
@@ -67,6 +95,12 @@ def literal_scope_prefix(scope: str) -> str:
     cuts = [scope.find(char) for char in "*?[" if char in scope]
     cut = min(cuts) if cuts else len(scope)
     return scope[:cut].strip("/")
+
+
+def literal_scope_suffix(scope: str) -> str:
+    """Return the literal text after the last glob metacharacter."""
+    last = max((scope.rfind(char) for char in "*?["), default=-1)
+    return scope[last + 1 :] if last >= 0 else ""
 
 
 def scopes_overlap(left: str, right: str) -> bool:
@@ -90,28 +124,49 @@ def scopes_overlap(left: str, right: str) -> bool:
             or scope_contains(pattern, literal)
         )
 
-    # Both are globs. Only a recursive /** scope can be shown to overlap
-    # without evaluating concrete paths.
-    if not (left.endswith("/**") or right.endswith("/**")):
-        return False
+    # Both are globs. Use the literal prefix and suffix as a conservative
+    # intersection test. Disjoint directories or disjoint literal extensions
+    # are the only cases we can prove non-overlapping without evaluating
+    # concrete paths.
     left_prefix = literal_scope_prefix(left)
     right_prefix = literal_scope_prefix(right)
-    if not left_prefix or not right_prefix:
+    if (
+        left_prefix
+        and right_prefix
+        and not left_prefix.startswith(right_prefix)
+        and not right_prefix.startswith(left_prefix)
+    ):
         return False
-    return scope_contains(left_prefix, right_prefix) or scope_contains(right_prefix, left_prefix)
+
+    # Character classes make suffix reasoning unreliable; stay conservative.
+    if "[" in left or "[" in right:
+        return True
+    left_suffix = literal_scope_suffix(left)
+    right_suffix = literal_scope_suffix(right)
+    if (
+        left_suffix
+        and right_suffix
+        and not left_suffix.endswith(right_suffix)
+        and not right_suffix.endswith(left_suffix)
+    ):
+        return False
+    return True
 
 
 def load_plan(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         print(f"file not found: {path}", file=sys.stderr)
         raise SystemExit(2)
-    except json.JSONDecodeError as e:
-        print(f"invalid JSON in {path}: {e}", file=sys.stderr)
-        raise SystemExit(2)
     except (OSError, UnicodeDecodeError) as e:
         print(f"could not read {path}: {e}", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError) as e:
+        detail = getattr(e, "msg", None) or str(e)
+        print(f"invalid JSON in {path}: {detail}", file=sys.stderr)
         raise SystemExit(2)
     if not isinstance(data, dict):
         print("plan must be a JSON object", file=sys.stderr)
@@ -123,12 +178,15 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
 
+    for key in sorted(set(plan) - TOP_LEVEL_KEYS):
+        errors.append(f"unknown top-level key {key!r}")
+
     goal = plan.get("goal")
     if not isinstance(goal, str) or not goal.strip():
         errors.append("goal must be a non-empty string")
 
     mode = plan.get("mode")
-    if mode not in {"single", "delegated"}:
+    if not isinstance(mode, str) or mode not in {"single", "delegated"}:
         errors.append("mode must be 'single' or 'delegated'")
 
     ignore_cost = plan.get("ignore_cost")
@@ -144,6 +202,8 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
         if not isinstance(budget, dict):
             errors.append("budget must be an object")
         else:
+            for key in sorted(set(budget) - BUDGET_KEYS):
+                errors.append(f"budget: unknown key {key!r}")
             if "unit" in budget and not isinstance(budget.get("unit"), str):
                 errors.append("budget.unit must be a string")
             for field in ("estimated_units", "remaining_units"):
@@ -170,6 +230,9 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
             errors.append(f"{here} must be an object")
             continue
 
+        for key in sorted(set(unit) - UNIT_KEYS):
+            errors.append(f"{here}: unknown key {key!r}")
+
         uid = unit.get("id")
         if not isinstance(uid, str) or not uid:
             errors.append(f"{here}.id must be a non-empty string")
@@ -187,7 +250,7 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
             errors.append(f"{uid}: title must be a non-empty string")
 
         role = unit.get("role")
-        if role not in ROLES:
+        if not isinstance(role, str) or role not in ROLES:
             errors.append(f"{uid}: role must be one of {sorted(ROLES)}")
 
         objective = unit.get("objective")
@@ -212,40 +275,48 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
                 seen_depends.add(dep)
 
         isolation = unit.get("isolation")
-        if isolation not in ISOLATION:
+        if not isinstance(isolation, str) or isolation not in ISOLATION:
             errors.append(f"{uid}: isolation must be 'shared' or 'worktree'")
 
         unit_mode = unit.get("mode")
-        if unit_mode not in MODES:
+        if not isinstance(unit_mode, str) or unit_mode not in MODES:
             errors.append(f"{uid}: mode must be 'async' or 'wait'")
 
-        if mode == "delegated":
-            target = unit.get("target")
-            if not isinstance(target, dict):
+        target = unit.get("target")
+        if target is None:
+            if mode == "delegated":
                 errors.append(f"{uid}: delegated units need a target object")
-            else:
-                pid = target.get("providerInstanceId")
-                mid = target.get("model")
-                if not isinstance(pid, str) or not pid.strip():
-                    errors.append(f"{uid}: target.providerInstanceId is required")
-                if not isinstance(mid, str) or not mid.strip():
-                    errors.append(f"{uid}: target.model is required")
-                options = target.get("options")
-                if options is not None and not isinstance(options, (dict, list)):
-                    errors.append(f"{uid}: target.options must be an object or array")
-                if isinstance(options, dict):
-                    for option_id, value in options.items():
-                        if not isinstance(value, (str, bool, int, float)):
-                            errors.append(f"{uid}: target.options[{option_id!r}] must be a scalar")
-                if isinstance(options, list):
-                    for j, option in enumerate(options):
-                        if not isinstance(option, dict) or "id" not in option or "value" not in option:
-                            errors.append(f"{uid}: target.options[{j}] needs id and value")
-                            continue
-                        if not isinstance(option.get("id"), str) or not option.get("id", "").strip():
-                            errors.append(f"{uid}: target.options[{j}].id must be a non-empty string")
-                        if not isinstance(option.get("value"), (str, bool, int, float)):
-                            errors.append(f"{uid}: target.options[{j}].value must be a scalar")
+        elif not isinstance(target, dict):
+            errors.append(f"{uid}: target must be an object")
+        else:
+            for key in sorted(set(target) - TARGET_KEYS):
+                errors.append(f"{uid}: target has unknown key {key!r}")
+            pid = target.get("providerInstanceId")
+            mid = target.get("model")
+            if not isinstance(pid, str) or not pid.strip():
+                errors.append(f"{uid}: target.providerInstanceId is required")
+            if not isinstance(mid, str) or not mid.strip():
+                errors.append(f"{uid}: target.model is required")
+            options = target.get("options")
+            if options is not None and not isinstance(options, (dict, list)):
+                errors.append(f"{uid}: target.options must be an object or array")
+            if isinstance(options, dict):
+                for option_id, value in options.items():
+                    if not isinstance(value, (str, bool, int, float)):
+                        errors.append(f"{uid}: target.options[{option_id!r}] must be a scalar")
+            if isinstance(options, list):
+                for j, option in enumerate(options):
+                    if not isinstance(option, dict) or "id" not in option or "value" not in option:
+                        errors.append(f"{uid}: target.options[{j}] needs id and value")
+                        continue
+                    for key in sorted(set(option) - OPTION_KEYS):
+                        errors.append(
+                            f"{uid}: target.options[{j}] has unknown key {key!r}"
+                        )
+                    if not isinstance(option.get("id"), str) or not option.get("id", "").strip():
+                        errors.append(f"{uid}: target.options[{j}].id must be a non-empty string")
+                    if not isinstance(option.get("value"), (str, bool, int, float)):
+                        errors.append(f"{uid}: target.options[{j}].value must be a scalar")
 
         write_scope = unit.get("write_scope", [])
         if not isinstance(write_scope, list):
@@ -260,7 +331,7 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
                     errors.append(f"{uid}: duplicate write_scope entry {scope!r}")
                     continue
                 seen_scope.add(scope)
-            if role in {"research", "review", "design"} and write_scope:
+            if isinstance(role, str) and role in {"research", "review", "design"} and write_scope:
                 warnings.append(f"{uid}: {role} unit declares write_scope; confirm it needs writes")
 
         commands = unit.get("commands")
@@ -323,6 +394,8 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
     if not isinstance(integration, dict):
         errors.append("integration must be an object")
     else:
+        for key in sorted(set(integration) - INTEGRATION_KEYS):
+            errors.append(f"integration: unknown key {key!r}")
         order = integration.get("order")
         if not isinstance(order, list):
             errors.append("integration.order must be an array")

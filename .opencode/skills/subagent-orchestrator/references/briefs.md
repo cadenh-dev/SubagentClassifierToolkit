@@ -177,6 +177,34 @@ RULES
 - If there are no findings, say so explicitly and list what you checked.
 ```
 
+### Review recheck
+
+A recheck is a new child, not a continuation of the original reviewer thread.
+
+```text
+ROLE: review
+OBJECTIVE: Verify that the fixes for the prior review findings are correct and complete.
+
+INPUTS
+- Prior findings: <list each finding, location, and claimed status>
+- Fix commit: <SHA>
+- Diff: <base>..<head>
+- Original acceptance criteria: <repeat them>
+
+WRITE SCOPE: none.
+
+DELIVERABLE
+- Status for each prior finding: fixed, not fixed, or partially fixed, with file:line evidence.
+- New findings introduced by the fix, by severity.
+- A final verdict: approve or request changes.
+- If no findings remain, list what you checked.
+
+RULES
+- Read the fix diff; do not trust the author's summary.
+- Do not edit the branch.
+- Do not assume a finding is fixed because the author said so.
+```
+
 ### General
 
 Use `general` only when the task does not fit the other roles. State whether writes are allowed and give the same acceptance/reporting structure.
@@ -298,7 +326,10 @@ RULES
 Include these in every brief unless the task explicitly says otherwise:
 
 - Do the work yourself. Do not start subagents.
+- Use the checkout and isolation the parent provides; do not create a worktree or checkout.
 - Do not watch PRs. The parent owns the watch.
 - Do not modify files outside the write scope.
 - Do not paste secrets or credentials into your report.
+- Do not request approval for work the brief already authorizes; ask only when a decision or permission is genuinely missing.
+- If you create or update a PR, end with: `PR <full URL>, head <SHA>, checks and reviews <state>.`
 - If blocked, ask one specific question with the options you considered.

@@ -5,13 +5,13 @@ Useful additions beyond the current skills, ordered by leverage. Items marked **
 ## Implemented
 
 ### 1. Subagent orchestrator
-Classify work into units, choose a model/provider, write briefs, deploy, supervise, verify, and integrate.
+Classify work into units, choose a model/provider, write briefs, deploy, supervise, verify, and integrate. Explicit user pins and parent-never-codes constraints are handled as hard constraints.
 
 ### 2. Usage-budget guard
-User-maintained remaining-usage snapshot; `BUDGET_EXCEEDED` instead of launching an over-budget unit.
+User-maintained remaining-usage snapshot; `BUDGET_EXCEEDED` instead of launching an over-budget unit. Pinned targets stop rather than falling back.
 
 ### 3. Delegation plan validator
-Validate unit ids, dependencies, cycles, integration order, acceptance criteria, and isolation.
+Validate unit ids, dependencies, cycles, integration order, acceptance criteria, isolation, and overlapping shared writes.
 
 ### 4. Project classifier
 Inspect a repository and generate a project-local tool router. Detects languages, frameworks, engines, build tools, commands, runtimes, and ambiguity:
@@ -22,9 +22,34 @@ Inspect a repository and generate a project-local tool router. Detects languages
 - npm vs pnpm vs yarn
 - monorepo/polyglot path routing
 
+Refreshes preserve unrelated files and refuse unrecognized destinations. Python runtime probes distinguish a working interpreter from a broken PATH alias.
+
+### 5. Outcome ledger / routing feedback
+Append-only per-unit records:
+
+- target and options
+- estimated vs actual usage
+- duration
+- success/failure
+- review findings
+- retries
+- parent-verified vs child-claimed
+
+`summarize` groups comparable runs. It never edits the routing policy automatically.
+
+### 6. Skill linter
+Deterministic, read-only checks for Agent Skills:
+
+- `name` matches directory and regex
+- description length
+- local links exist
+- referenced scripts compile
+- no high-confidence secrets or absolute user paths
+- supported frontmatter subset parses
+
 ## Next
 
-### 5. Capability registry / doctor
+### 7. Capability registry / doctor
 One command that reports:
 
 - languages and runtime versions
@@ -34,30 +59,6 @@ One command that reports:
 - missing commands the project expects
 
 The project classifier's profile is a good starting point; this adds versions and health checks.
-
-### 6. Outcome ledger / routing feedback
-Record per-unit results:
-
-- target and options
-- estimated vs actual usage
-- duration
-- success/failure
-- review findings
-- retries
-
-Then tune `data/routing-policy.json` from evidence instead of static heuristics. This is the missing feedback loop for cost/reasoning tiers.
-
-### 7. Skill linter
-Validate Agent Skills before install:
-
-- `name` matches directory and regex
-- description length
-- local links exist
-- referenced scripts exist and compile
-- no secrets or absolute user paths
-- frontmatter parses
-
-This would have caught the original `Tool Router` name issue immediately.
 
 ### 8. Repo guardrail generator
 Generate or update `AGENTS.md` from the project profile:
@@ -79,7 +80,7 @@ A small runner that:
 - compares changed files with the declared write scope
 - returns a pass/fail verdict
 
-This makes "verify, don't trust" executable instead of a checklist.
+This makes "verify, don't trust" executable instead of a checklist. The outcome ledger records the verdict but does not run the checks.
 
 ### 10. Worktree / PR janitor
 Find stale worktrees, orphan branches, unlinked PRs, and abandoned delegated tasks. Offer cleanup only after confirmation; never delete unmerged work silently.
@@ -104,7 +105,7 @@ Append-only record of:
 - budget snapshot
 - outcome
 
-Useful for debugging "why did it pick Cursor for that?" and for auditing cost.
+Useful for debugging "why did it pick Cursor for that?" and for auditing cost. The outcome ledger covers the result; a decision journal would also capture the rejected alternatives.
 
 ### 13. Secret-safe bootstrap
 A preflight that checks required credentials through `request_secret` and never writes values to the repo or logs.
