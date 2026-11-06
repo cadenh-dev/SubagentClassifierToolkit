@@ -154,7 +154,71 @@ Reject or revert out-of-scope files. Do not merge a child that ignored its write
 - If a PR is stacked, describe the base branch and order. Do not rebase a child's branch without telling it.
 - If multiple PRs conflict, the parent or a delegated integration unit merges in dependency order and runs the full test suite after each merge.
 
-## 8. Integration checklist
+## 8. Verification harness
+
+`scripts/verify_unit.py` makes the two machine-checkable parts of Phase 7
+repeatable:
+
+```bash
+python3 scripts/verify_unit.py \
+  --plan plan.json --unit api-auth \
+  --repo /work/tree --base 4f2c1a \
+  --timeout 600 --allow-commands
+```
+
+It runs the selected unit's declared `commands` in the repository and compares
+the committed diff `base..HEAD` with that unit's `write_scope`.
+
+What it does:
+
+1. Runs `validate_plan.py` as a preflight, then strictly checks the selected
+   unit's command, acceptance, and write-scope shapes.
+2. Resolves the repository path to its real path and requires it to be the git
+   worktree top level. Detached `HEAD` is supported.
+3. Resolves `--base` to a commit and reads changed paths with
+   `git diff --name-only -z --no-renames <base> <head>`. External diff and
+   textconv drivers are disabled.
+4. Matches each changed path against `write_scope`: literal entries name a file
+   or directory subtree, and glob entries use `fnmatch`, the same primitive the
+   plan validator uses. Absolute scopes, drive paths, and `..` traversal are
+   invalid scopes, not silently normalized.
+5. Runs commands sequentially with `cwd` set to the resolved repository. Each
+   command has its own timeout and bounded stdout/stderr capture.
+
+Safety and trust:
+
+- **Commands are trusted code.** With `--allow-commands` they execute with the
+  caller's privileges, inherit the caller's environment, and can modify the
+  working tree. The harness does not sandbox them, reset, clean, or discard
+  changes.
+- Without `--allow-commands` execution is refused and the verdict is `blocked`.
+- Without `--shell`, commands are parsed as an argv vector and run without a
+  shell. Unquoted shell operators are refused. Use `--shell` only for a trusted
+  plan whose commands genuinely need shell syntax.
+- The harness never reads credential files, `.env` files, or secret stores. It
+  reads only the plan, git metadata, and output from commands it was explicitly
+  allowed to run.
+- Logs may contain sensitive data. Keep captured output local and do not paste
+  raw logs into a shared ledger.
+
+Output and limits:
+
+- JSON contains `verdict`, command results (`status`, exit code, timeout,
+  duration, bounded stdout/stderr, truncation flags), `changed_paths`,
+  `scope_violations`, `invalid_write_scope`, `path_errors`, total duration,
+  `verdict_scope`, and `limitations`.
+- `pass` means only that the declared commands passed and the committed
+  `base..HEAD` paths are in scope. Acceptance prose is not machine-executable
+  and is never marked verified. A unit with no commands is `unverified`, not
+  `pass`.
+- Only committed changes are compared. Uncommitted and untracked changes are
+  reported as a limitation, not folded into the diff.
+- Exit codes: `0` pass, `1` fail/unverified, `2` error/blocked.
+- The harness does not append to the outcome ledger. Review the JSON, then use
+  `outcome_ledger.py` manually if the evidence warrants a record. The verdict
+  is evidence for the parent; it is not an automatic acceptance gate.
+
+## 9. Integration checklist
 
 Before accepting a unit:
 
@@ -176,7 +240,7 @@ Before declaring the whole task done:
 - [ ] PRs linked and watched if needed.
 - [ ] Final summary includes targets used, units, tests, PRs, and risks.
 
-## 9. Cancellation
+## 10. Cancellation
 
 Cancel when:
 
@@ -189,7 +253,7 @@ Use `task_cancel` with the `taskId`. A finished task keeps its result; cancel do
 
 Do not cancel a child just because a wait timed out. It may still be working.
 
-## 10. Security and privacy
+## 11. Security and privacy
 
 - Do not put credentials, tokens, or private keys in a brief.
 - Use `request_secret` in the parent; pass a secret reference or a file path to the child only if the tool supports it safely.
@@ -197,7 +261,7 @@ Do not cancel a child just because a wait timed out. It may still be working.
 - Do not paste production data into a child task. Use a fixture or a redacted sample.
 - Review a child's diff for accidental secret material before pushing.
 
-## 11. Anti-patterns
+## 12. Anti-patterns
 
 | Anti-pattern | Consequence | Fix |
 |---|---|---|
@@ -216,7 +280,7 @@ Do not cancel a child just because a wait timed out. It may still be working.
 | Hardcoded model IDs | Breaks when providers change | Read capabilities |
 | Treating unknown as available | Failed runs | Filter unknown |
 
-## 12. Minimal parent loop
+## 13. Minimal parent loop
 
 ```text
 1. Classify the task. If it is small and parent execution is allowed, do it.
