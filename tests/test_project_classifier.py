@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,14 +18,39 @@ PROJECT_SKILL = ROOT / ".opencode" / "skills" / "project-classifier"
 BUILDER = PROJECT_SKILL / "scripts" / "build_project_classifier.py"
 
 
-def run(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, str(BUILDER), *args], text=True, capture_output=True, cwd=str(ROOT))
+def run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(BUILDER), *args],
+        text=True,
+        capture_output=True,
+        cwd=str(ROOT),
+        env=env,
+    )
 
 
 def write(root: Path, rel: str, content: str = "") -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def python_runtime_command(profile: dict) -> str:
+    for item in profile.get("languages", []):
+        if item.get("name") == "python" and item.get("runtime_available"):
+            return item.get("runtime_command") or "python3"
+    return "python3"
+
+
+def broken_python3(directory: Path) -> Path:
+    """Create an executable named like python3 that fails a version probe."""
+    if os.name == "nt":
+        path = directory / "python3.cmd"
+        path.write_text("@exit /b 9009\r\n", encoding="utf-8")
+        return path
+    path = directory / "python3"
+    path.write_text("#!/bin/sh\nexit 9009\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 class ProjectClassifierMetadataTests(unittest.TestCase):
@@ -62,8 +89,9 @@ dependencies = ["pytest", "ruff"]
             profile = json.loads((out / "data" / "project-profile.json").read_text())
             self.assertEqual(profile["primary_language"], "python")
             self.assertEqual(profile["kind"], "software")
+            python_command = python_runtime_command(profile)
             self.assertIn("python", (out / "SKILL.md").read_text().lower())
-            self.assertIn("python3 -m pytest", (out / "SKILL.md").read_text())
+            self.assertIn(f"{python_command} -m pytest", (out / "SKILL.md").read_text())
 
     def test_java_project(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -89,7 +117,8 @@ dependencies = ["pytest", "ruff"]
             result = run("--root", str(root), "--name", "unit-tool-router")
             self.assertEqual(result.returncode, 0, result.stderr)
             text = (out / "SKILL.md").read_text()
-            self.assertIn("python3 -m unittest discover -s tests -v", text)
+            profile = json.loads((out / "data" / "project-profile.json").read_text())
+            self.assertIn(f"{python_runtime_command(profile)} -m unittest discover -s tests -v", text)
 
     def test_node_framework_and_package_manager(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -200,6 +229,201 @@ dependencies = ["pytest", "ruff"]
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(out.exists())
             self.assertIn('"primary_language": "python"', result.stdout)
+
+
+class ProjectClassifierRefreshTests(unittest.TestCase):
+    def test_force_preserves_unrelated_files_inside_generated_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write(root, "main.py", "x = 1\n")
+            out = root / ".opencode" / "skills" / "keep-tool-router"
+            self.assertEqual(run("--root", str(root), "--name", "keep-tool-router").returncode, 0)
+            write(out, "notes.md", "keep me\n")
+            write(out, "data/extra.json", '{"keep": true}\n')
+
+            forced = run("--root", str(root), "--name", "keep-tool-router", "--force")
+            self.assertEqual(forced.returncode, 0, forced.stderr)
+            self.assertEqual((out / "notes.md").read_text(encoding="utf-8"), "keep me\n")
+            self.assertEqual((out / "data" / "extra.json").read_text(encoding="utf-8"), '{"keep": true}\n')
+            self.assertTrue((out / "SKILL.md").exists())
+            self.assertTrue((out / "data" / "project-profile.json").exists())
+            self.assertTrue((out / "references" / "evidence.md").exists())
+
+    def test_repeated_legitimate_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write(root, "main.py", "x = 1\n")
+            out = root / ".opencode" / "skills" / "repeat-tool-router"
+            self.assertEqual(run("--root", str(root), "--name", "repeat-tool-router").returncode, 0)
+            write(out, "sentinel.txt", "still here\n")
+            for _ in range(2):
+                result = run("--root", str(root), "--name", "repeat-tool-router", "--force")
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((out / "sentinel.txt").read_text(encoding="utf-8"), "still here\n")
+
+    def test_force_refuses_unrelated_existing_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write(root, "main.py", "x = 1\n")
+            out = root / ".opencode" / "skills" / "unrelated-tool-router"
+            write(out, "notes.txt", "do not delete\n")
+
+            result = run("--root", str(root), "--name", "unrelated-tool-router", "--force")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("refusing", result.stderr)
+            self.assertEqual((out / "notes.txt").read_text(encoding="utf-8"), "do not delete\n")
+            self.assertFalse((out / "SKILL.md").exists())
+
+    def test_force_refuses_malformed_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write(root, "main.py", "x = 1\n")
+            out = root / ".opencode" / "skills" / "malformed-tool-router"
+            write(out, "SKILL.md", "---\nname: malformed-tool-router\n---\n\n# Hand written\n")
+
+            result = run("--root", str(root), "--name", "malformed-tool-router", "--force")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("refusing", result.stderr)
+            self.assertEqual(
+                (out / "SKILL.md").read_text(encoding="utf-8"),
+                "---\nname: malformed-tool-router\n---\n\n# Hand written\n",
+            )
+            self.assertFalse((out / "data").exists())
+
+    def test_force_refuses_output_file(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write(root, "main.py", "x = 1\n")
+            out = root / ".opencode" / "skills" / "file-tool-router"
+            out.parent.mkdir(parents=True)
+            out.write_text("not a directory\n", encoding="utf-8")
+
+            result = run("--root", str(root), "--name", "file-tool-router", "--force")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("refusing", result.stderr)
+            self.assertEqual(out.read_text(encoding="utf-8"), "not a directory\n")
+
+    def test_force_refuses_ancestor_of_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            root = base / "project"
+            write(root, "main.py", "x = 1\n")
+            write(base, "sentinel.txt", "keep\n")
+
+            result = run("--root", str(root), "--name", "x-tool-router", "--out", str(base), "--force")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("refusing", result.stderr)
+            self.assertEqual((base / "sentinel.txt").read_text(encoding="utf-8"), "keep\n")
+            self.assertFalse((base / "SKILL.md").exists())
+            self.assertTrue((root / "main.py").exists())
+
+    def test_force_refuses_output_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write(root, "main.py", "x = 1\n")
+            external = root / "external"
+            external.mkdir()
+            write(external, "sentinel.txt", "keep\n")
+            out = root / ".opencode" / "skills" / "link-tool-router"
+            out.parent.mkdir(parents=True)
+            try:
+                out.symlink_to(external, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation is not supported on this platform")
+
+            result = run("--root", str(root), "--name", "link-tool-router", "--force")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("refusing", result.stderr)
+            self.assertEqual((external / "sentinel.txt").read_text(encoding="utf-8"), "keep\n")
+            self.assertFalse((external / "SKILL.md").exists())
+
+    def test_force_refuses_linked_managed_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write(root, "main.py", "x = 1\n")
+            out = root / ".opencode" / "skills" / "linked-artifact-tool-router"
+            self.assertEqual(run("--root", str(root), "--name", "linked-artifact-tool-router").returncode, 0)
+            external = root / "external-skill.md"
+            shutil.copyfile(out / "SKILL.md", external)
+            (out / "SKILL.md").unlink()
+            try:
+                (out / "SKILL.md").symlink_to(external)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation is not supported on this platform")
+            original = external.read_text(encoding="utf-8")
+
+            result = run("--root", str(root), "--name", "linked-artifact-tool-router", "--force")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("refusing", result.stderr)
+            self.assertEqual(external.read_text(encoding="utf-8"), original)
+
+
+class ProjectClassifierRuntimeTests(unittest.TestCase):
+    def test_broken_python3_alias_falls_back_to_working_python(self) -> None:
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as b:
+            root = Path(d)
+            bin_dir = Path(b)
+            write(root, "main.py", "x = 1\n")
+            write(root, "tests/test_main.py", "import unittest\n\nclass T(unittest.TestCase):\n    pass\n")
+            broken_python3(bin_dir)
+            if os.name != "nt":
+                (bin_dir / "python").symlink_to(sys.executable)
+            env = os.environ.copy()
+            env["PATH"] = os.pathsep.join([str(bin_dir), str(Path(sys.executable).parent)])
+
+            result = run("--root", str(root), "--name", "runtime-tool-router", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            profile = json.loads((root / ".opencode" / "skills" / "runtime-tool-router" / "data" / "project-profile.json").read_text())
+            python = next(item for item in profile["languages"] if item["name"] == "python")
+            self.assertTrue(python["runtime_on_path"])
+            self.assertTrue(python["runtime_available"])
+            self.assertEqual(python["runtime_command"], "python")
+            self.assertTrue(python["runtime_rejected"])
+            self.assertEqual(python["runtime_rejected"][0]["command"], "python3")
+            commands = {item["command"] for item in profile["commands"]}
+            self.assertIn("python -m unittest discover -s tests -v", commands)
+            self.assertNotIn("python3 -m unittest discover -s tests -v", commands)
+            text = (root / ".opencode" / "skills" / "runtime-tool-router" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("python3 on PATH is not usable; using python", text)
+
+    def test_broken_alias_without_fallback_is_not_usable(self) -> None:
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as b:
+            root = Path(d)
+            bin_dir = Path(b)
+            write(root, "main.py", "x = 1\n")
+            write(root, "tests/test_main.py", "import unittest\n")
+            broken_python3(bin_dir)
+            env = os.environ.copy()
+            env["PATH"] = str(bin_dir)
+
+            result = run("--root", str(root), "--name", "broken-tool-router", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            profile = json.loads((root / ".opencode" / "skills" / "broken-tool-router" / "data" / "project-profile.json").read_text())
+            python = next(item for item in profile["languages"] if item["name"] == "python")
+            self.assertTrue(python["runtime_on_path"])
+            self.assertFalse(python["runtime_available"])
+            self.assertIsNone(python["runtime_command"])
+            self.assertTrue(any("on PATH but no usable runtime" in warning for warning in profile["warnings"]))
+
+    def test_no_runtime_keeps_portable_command(self) -> None:
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as b:
+            root = Path(d)
+            empty_bin = Path(b)
+            write(root, "main.py", "x = 1\n")
+            write(root, "tests/test_main.py", "import unittest\n")
+            env = os.environ.copy()
+            env["PATH"] = str(empty_bin)
+
+            result = run("--root", str(root), "--name", "none-tool-router", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            profile = json.loads((root / ".opencode" / "skills" / "none-tool-router" / "data" / "project-profile.json").read_text())
+            python = next(item for item in profile["languages"] if item["name"] == "python")
+            self.assertFalse(python["runtime_on_path"])
+            self.assertFalse(python["runtime_available"])
+            self.assertIsNone(python["runtime_command"])
+            self.assertTrue(any("runtime is not on PATH" in warning for warning in profile["warnings"]))
+            commands = {item["command"] for item in profile["commands"]}
+            self.assertIn("python3 -m unittest discover -s tests -v", commands)
 
 
 if __name__ == "__main__":

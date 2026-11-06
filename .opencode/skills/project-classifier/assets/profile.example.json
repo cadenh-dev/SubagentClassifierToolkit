@@ -14,6 +14,9 @@
       "frameworks": ["FastAPI", "pytest"],
       "runtime_available": true,
       "runtime_path": "/usr/bin/python3",
+      "runtime_command": "python3",
+      "runtime_on_path": true,
+      "runtime_rejected": [],
       "confidence": "high"
     },
     {
@@ -24,6 +27,9 @@
       "frameworks": ["Spring Boot", "JUnit"],
       "runtime_available": false,
       "runtime_path": null,
+      "runtime_command": null,
+      "runtime_on_path": false,
+      "runtime_rejected": [],
       "confidence": "high"
     }
   ],
