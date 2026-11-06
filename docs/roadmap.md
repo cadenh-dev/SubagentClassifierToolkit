@@ -47,9 +47,12 @@ Deterministic, read-only checks for Agent Skills:
 - no high-confidence secrets or absolute user paths
 - supported frontmatter subset parses
 
+### 7. Verification harness
+`scripts/verify_unit.py` runs one unit's declared commands with a bounded timeout and bounded stdout/stderr capture, then compares the committed `base..HEAD` diff against the unit's declared write scope. It reports command failures, timeouts, out-of-scope paths, invalid scopes, and path errors as JSON with an explicit verdict scope and limitations. Commands require `--allow-commands`; shell syntax requires a separate `--shell` opt-in. The harness never treats passing commands as proof of prose acceptance criteria and does not append to the ledger automatically.
+
 ## Next
 
-### 7. Capability registry / doctor
+### 8. Capability registry / doctor
 One command that reports:
 
 - languages and runtime versions
@@ -60,7 +63,7 @@ One command that reports:
 
 The project classifier's profile is a good starting point; this adds versions and health checks.
 
-### 8. Repo guardrail generator
+### 9. Repo guardrail generator
 Generate or update `AGENTS.md` from the project profile:
 
 - build/test/lint commands
@@ -70,17 +73,6 @@ Generate or update `AGENTS.md` from the project profile:
 - review expectations
 
 Pairs naturally with the project classifier.
-
-### 9. Verification harness
-A small runner that:
-
-- takes a unit's acceptance commands
-- runs them in a clean environment
-- captures logs and exit codes
-- compares changed files with the declared write scope
-- returns a pass/fail verdict
-
-This makes "verify, don't trust" executable instead of a checklist. The outcome ledger records the verdict but does not run the checks.
 
 ### 10. Worktree / PR janitor
 Find stale worktrees, orphan branches, unlinked PRs, and abandoned delegated tasks. Offer cleanup only after confirmation; never delete unmerged work silently.

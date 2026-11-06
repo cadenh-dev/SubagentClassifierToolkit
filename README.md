@@ -133,6 +133,21 @@ python3 .opencode/skills/subagent-orchestrator/scripts/outcome_ledger.py summari
 
 The ledger is append-only JSON Lines in `data/outcomes.jsonl` (git-ignored). It distinguishes a parent-verified success from a child's self-report, keeps unknown usage unknown, and never rewrites the routing policy automatically. See [`references/outcomes.md`](.opencode/skills/subagent-orchestrator/references/outcomes.md).
 
+## Verification harness
+
+A child's summary is a claim. `verify_unit.py` makes the machine-checkable part of "verify, don't trust" executable for one unit:
+
+```bash
+python3 .opencode/skills/subagent-orchestrator/scripts/verify_unit.py \
+  --plan plan.json --unit api-auth \
+  --repo /work/tree --base 4f2c1a \
+  --timeout 600 --allow-commands
+```
+
+It validates the plan first, runs the unit's declared commands in the repository with a bounded timeout and bounded logs, and compares the committed `base..HEAD` diff against the unit's `write_scope`. Out-of-scope paths, invalid scopes, timeouts, and failed commands produce a failing JSON verdict. A passing verdict says only that the declared commands passed and the committed diff is in scope; acceptance prose is never marked verified.
+
+Commands are trusted code, inherit the caller's environment, and execute with the caller's privileges. Without `--allow-commands` the harness refuses to run anything. Without `--shell` it parses commands as argv and refuses unquoted shell operators; `--shell` is an explicit opt-in. It never reads credential files or secret stores, does not reset or clean the repository, and leaves no log artifacts. It does not append to the outcome ledger: review the JSON and record the outcome manually when the evidence warrants it. See [`references/operations.md`](.opencode/skills/subagent-orchestrator/references/operations.md) §8.
+
 ## Project classifier
 
 The second skill builds a **project-local tool router** from repository evidence. It answers competing language/engine/tool questions and "which test command?" without guessing from the model's preferences.
@@ -185,6 +200,7 @@ It validates frontmatter, name/directory agreement, description length, local li
 └── scripts/
     ├── select_target.py         # deterministic route-only selector
     ├── validate_plan.py         # plan and dependency validator
+    ├── verify_unit.py           # bounded command + write-scope verifier
     └── outcome_ledger.py        # append-only outcome records and summaries
 .opencode/skills/project-classifier/
 ├── SKILL.md                     # project-classifier workflow
@@ -200,7 +216,8 @@ tests/
 ├── test_toolkit.py              # selector and plan-validator tests
 ├── test_project_classifier.py   # project-classifier tests
 ├── test_skill_linter.py         # skill-linter tests
-└── test_outcome_ledger.py       # outcome-ledger tests
+├── test_outcome_ledger.py       # outcome-ledger tests
+└── test_verify_unit.py          # verification-harness tests
 docs/
 ├── requirements.md              # requirement-to-implementation mapping
 └── roadmap.md                   # other useful toolkit pieces
