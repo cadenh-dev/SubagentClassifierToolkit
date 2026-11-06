@@ -1050,6 +1050,7 @@ def _verify(args: argparse.Namespace, started: float) -> tuple[dict[str, Any], i
                 "role": unit.get("role"),
                 "isolation": unit.get("isolation"),
                 "mode": unit.get("mode"),
+                "target": unit.get("target"),
                 "acceptance": unit.get("acceptance", []),
                 "acceptance_evaluated": False,
             },
