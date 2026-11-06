@@ -171,17 +171,19 @@ the committed diff `base..HEAD` with that unit's `write_scope`.
 
 What it does:
 
-1. Runs `validate_plan.py` as a preflight, then strictly checks the selected
-   unit's command, acceptance, and write-scope shapes.
+1. Loads the plan once and runs the shipped `validate_plan.py` rules against
+   that same parsed object, then strictly checks the selected unit.
 2. Resolves the repository path to its real path and requires it to be the git
-   worktree top level. Detached `HEAD` is supported.
+   worktree top level. It rejects redirected `.git` metadata. For linked
+   worktrees, pass both trusted paths `--expected-git-dir` and
+   `--expected-git-common-dir`. Detached `HEAD` is supported.
 3. Resolves `--base` to a commit and reads changed paths with
    `git diff --name-only -z --no-renames <base> <head>`. External diff and
    textconv drivers are disabled.
 4. Matches each changed path against `write_scope`: literal entries name a file
-   or directory subtree, and glob entries use `fnmatch`, the same primitive the
-   plan validator uses. Absolute scopes, drive paths, and `..` traversal are
-   invalid scopes, not silently normalized.
+   or directory subtree; in glob entries, `*`, `?`, and character classes stay
+   within one path segment, while `**` crosses directory levels. Absolute
+   scopes, drive paths, and `..` traversal are invalid scopes.
 5. Runs commands sequentially with `cwd` set to the resolved repository. Each
    command has its own timeout and bounded stdout/stderr capture.
 
@@ -190,7 +192,8 @@ Safety and trust:
 - **Commands are trusted code.** With `--allow-commands` they execute with the
   caller's privileges, inherit the caller's environment, and can modify the
   working tree. The harness does not sandbox them, reset, clean, or discard
-  changes.
+  changes. Git checks ignore inherited `GIT_*` overrides and disable
+  `core.fsmonitor` so repository hooks cannot execute during preflight.
 - Without `--allow-commands` execution is refused and the verdict is `blocked`.
 - Without `--shell`, commands are parsed as an argv vector and run without a
   shell. Unquoted shell operators are refused. Use `--shell` only for a trusted
@@ -198,8 +201,9 @@ Safety and trust:
 - The harness never reads credential files, `.env` files, or secret stores. It
   reads only the plan, git metadata, and output from commands it was explicitly
   allowed to run.
-- Logs may contain sensitive data. Keep captured output local and do not paste
-  raw logs into a shared ledger.
+- The JSON includes plan text, command strings, paths, and captured output, which
+  may contain sensitive data. Keep reports local and do not paste raw reports
+  into a shared ledger.
 
 Output and limits:
 
@@ -211,8 +215,9 @@ Output and limits:
   `base..HEAD` paths are in scope. Acceptance prose is not machine-executable
   and is never marked verified. A unit with no commands is `unverified`, not
   `pass`.
-- Only committed changes are compared. Uncommitted and untracked changes are
-  reported as a limitation, not folded into the diff.
+- Only committed changes in the initial `base..HEAD` snapshot are compared.
+  The harness reports tracked/untracked state before and after commands, and
+  fails if a command moves `HEAD`.
 - Exit codes: `0` pass, `1` fail/unverified, `2` error/blocked.
 - The harness does not append to the outcome ledger. Review the JSON, then use
   `outcome_ledger.py` manually if the evidence warrants a record. The verdict

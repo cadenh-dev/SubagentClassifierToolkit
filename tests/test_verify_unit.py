@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,7 +32,8 @@ VERIFY = (
 
 def py_command(code: str) -> str:
     """Build a harmless Python command string for a plan."""
-
+    if os.name == "nt":
+        return f"{subprocess.list2cmdline([sys.executable])} -c {subprocess.list2cmdline([code])}"
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
@@ -147,6 +150,9 @@ class VerifyUnitTests(unittest.TestCase):
         allow: bool = True,
         shell: bool = False,
         max_output: int | None = None,
+        env: dict[str, str] | None = None,
+        expected_git_dir: str | None = None,
+        expected_git_common_dir: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         args = [
             sys.executable,
@@ -167,12 +173,17 @@ class VerifyUnitTests(unittest.TestCase):
             args.append("--shell")
         if max_output is not None:
             args.append(f"--max-output-bytes={max_output}")
+        if expected_git_dir is not None:
+            args.extend(["--expected-git-dir", expected_git_dir])
+        if expected_git_common_dir is not None:
+            args.extend(["--expected-git-common-dir", expected_git_common_dir])
         return subprocess.run(
             args,
             cwd=str(ROOT),
             text=True,
             capture_output=True,
             timeout=120,
+            env=env,
         )
 
     def assert_clean_cli(self, result: subprocess.CompletedProcess[str]) -> None:
@@ -230,6 +241,26 @@ class VerifyUnitTests(unittest.TestCase):
         self.assertEqual(payload["command_results"][0]["status"], "not_run")
         self.assertFalse(marker.exists())
 
+    def test_repo_fsmonitor_does_not_run_when_commands_are_blocked(self) -> None:
+        marker = self.root / "fsmonitor-ran"
+        hook = self.root / "fsmonitor.py"
+        hook.write_text(
+            "from pathlib import Path; import sys; "
+            f"Path({str(marker)!r}).write_text('ran'); "
+            "sys.stdin.read(); print('token')\n",
+            encoding="utf-8",
+        )
+        git_ok(
+            self.repo,
+            "config",
+            "core.fsmonitor",
+            subprocess.list2cmdline([sys.executable, str(hook)]),
+        )
+        self.write_plan(commands=[py_command("print('must not run')")], write_scope=[])
+        result = self.run_verify(allow=False)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertFalse(marker.exists(), "repo-configured fsmonitor hook ran")
+
     def test_allow_commands_executes_command(self) -> None:
         marker = self.repo / "marker.txt"
         self.write_plan(
@@ -243,6 +274,23 @@ class VerifyUnitTests(unittest.TestCase):
         self.assertEqual(payload["verdict"], "pass")
         self.assertEqual(payload["command_results"][0]["status"], "pass")
         self.assertTrue(marker.exists())
+        self.assertTrue(payload["git"]["untracked_after"])
+        self.assertTrue(any("after command execution" in note for note in payload["limitations"]))
+
+    def test_command_commit_moves_head_and_fails_verification(self) -> None:
+        command = py_command(
+            "from pathlib import Path; import subprocess; "
+            "Path('src/command.py').write_text('x'); "
+            "subprocess.run(['git','add','src/command.py'],check=True); "
+            "subprocess.run(['git','commit','-m','command commit'],check=True)"
+        )
+        self.write_plan(commands=[command], write_scope=["src"])
+        result = self.run_verify()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        payload = payload_of(result)
+        self.assertEqual(payload["verdict"], "fail")
+        self.assertTrue(payload["git"]["head_moved_during_verification"])
+        self.assertTrue(any("HEAD moved" in error for error in payload["errors"]))
 
     def test_timeout_is_bounded(self) -> None:
         self.write_plan(
@@ -258,6 +306,71 @@ class VerifyUnitTests(unittest.TestCase):
         self.assertEqual(command["status"], "timeout")
         self.assertTrue(command["timed_out"])
         self.assertLess(payload["duration_seconds"], 10)
+
+    def test_inherited_git_repository_overrides_are_ignored(self) -> None:
+        other = self.root / "other"
+        other.mkdir()
+        git_ok(other, "init", "-q")
+        git_ok(other, "config", "core.worktree", str(self.repo))
+        env = os.environ.copy()
+        env.update({"GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(self.repo)})
+        result = self.run_verify(env=env)
+        self.assert_clean_cli(result)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = payload_of(result)
+        self.assertEqual(payload["git"]["head_commit"], self.base)
+
+    def test_external_gitfile_redirect_is_rejected(self) -> None:
+        other = self.root / "other"
+        other.mkdir()
+        git_ok(other, "init", "-q")
+        git_metadata = self.repo / ".git"
+        for entry in git_metadata.rglob("*"):
+            try:
+                os.chmod(entry, stat.S_IWRITE | stat.S_IREAD)
+            except OSError:
+                pass
+        shutil.rmtree(git_metadata)
+        (self.repo / ".git").write_text(f"gitdir: {other / '.git'}\n", encoding="utf-8")
+        result = self.run_verify()
+        self.assert_clean_cli(result)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("linked worktree", payload_of(result)["errors"][0])
+
+    def test_linked_worktree_requires_and_accepts_pinned_git_paths(self) -> None:
+        linked = self.root / "linked"
+        git_ok(self.repo, "worktree", "add", "--detach", str(linked), self.base)
+        linked_git_dir = git_ok(linked, "rev-parse", "--absolute-git-dir")
+        common_dir = git_ok(linked, "rev-parse", "--git-common-dir")
+        if not Path(common_dir).is_absolute():
+            common_dir = str(linked / common_dir)
+        rejected = self.run_verify(repo=linked)
+        self.assertEqual(rejected.returncode, 2, rejected.stdout + rejected.stderr)
+        result = self.run_verify(
+            repo=linked,
+            expected_git_dir=linked_git_dir,
+            expected_git_common_dir=common_dir,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_invalid_utf8_command_output_still_emits_json(self) -> None:
+        self.write_plan(commands=[py_command("import sys; sys.stdout.buffer.write(bytes([129]))")], write_scope=[])
+        result = self.run_verify()
+        self.assert_clean_cli(result)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = payload_of(result)
+        self.assertEqual(payload["command_results"][0]["stdout"], "\ufffd")
+
+    def test_nested_glob_requires_explicit_double_star(self) -> None:
+        self.change("src/nested/ok.py")
+        self.write_plan(write_scope=["src/*.py"])
+        result = self.run_verify()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(payload_of(result)["scope_violations"][0]["path"], "src/nested/ok.py")
+
+        self.write_plan(write_scope=["src/**/*.py"])
+        result = self.run_verify()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     # -- scope matching ------------------------------------------------------
 

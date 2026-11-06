@@ -42,17 +42,20 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import ctypes
+import importlib.util
 import json
 import math
 import os
 import posixpath
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import threading
 import time
-from fnmatch import fnmatch
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -115,7 +118,7 @@ def _base_limitations() -> list[str]:
         "Only tracked committed changes in base..HEAD are compared. Uncommitted and untracked files are not part of the diff.",
         "Commands run with the caller's privileges, inherit the caller's environment, and may modify the working tree; this harness never resets or cleans the repository.",
         "Child commands are not sandboxed and can access anything the caller can. The harness itself never reads credential files or secret stores.",
-        "Command stdout/stderr is decoded as UTF-8 with replacement and may contain sensitive data; do not copy raw logs into a shared ledger.",
+        "The report includes plan text, acceptance prose, command strings, paths, and UTF-8-decoded output; these fields may contain sensitive data.",
     ]
 
 
@@ -153,7 +156,7 @@ def _report(
 
 
 def _emit(report: dict[str, Any], code: int) -> int:
-    print(json.dumps(report, indent=2, ensure_ascii=False))
+    print(json.dumps(report, indent=2, ensure_ascii=True))
     return code
 
 
@@ -179,51 +182,25 @@ def _load_plan(path: Path) -> dict[str, Any]:
     return data
 
 
-def _run_plan_validator(plan_path: Path) -> dict[str, Any]:
-    """Run the sibling validate_plan.py as a preflight.
-
-    Using the shipped validator, rather than a second copy of its rules, keeps
-    the harness compatible with the plan contract. The validator is invoked
-    without a shell and only reads the plan.
-    """
-
+def _run_plan_validator(plan: dict[str, Any]) -> dict[str, Any]:
+    """Validate the exact already-loaded object using the shipped rules."""
     validator = Path(__file__).resolve().with_name("validate_plan.py")
     if not validator.is_file():
         raise VerifyError(f"plan validator not found beside verify_unit.py: {validator}")
-    command = [sys.executable, str(validator), "--plan", str(plan_path), "--json"]
     try:
-        proc = subprocess.run(
-            command,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=GIT_TIMEOUT_SECONDS,
-        )
-    except FileNotFoundError:
-        raise VerifyError("could not start the plan validator: Python interpreter not found") from None
-    except subprocess.TimeoutExpired:
-        raise VerifyError("plan validator timed out") from None
-    except OSError as exc:
-        raise VerifyError(f"could not run the plan validator: {exc}") from None
-
-    if proc.returncode not in (0, 1):
-        detail = (proc.stderr or proc.stdout or "").strip()
-        raise VerifyError(f"plan validator failed with exit {proc.returncode}: {detail}")
-    try:
-        payload = json.loads(proc.stdout)
-    except ValueError:
-        detail = (proc.stderr or proc.stdout or "").strip()
-        raise VerifyError(f"plan validator returned non-JSON output: {detail}") from None
-    if not isinstance(payload, dict) or "ok" not in payload:
-        raise VerifyError("plan validator returned an unexpected result")
-    if not payload.get("ok"):
-        errors = payload.get("errors")
-        if not isinstance(errors, list):
-            errors = ["plan validation failed"]
+        spec = importlib.util.spec_from_file_location("verify_unit_validate_plan", validator)
+        if spec is None or spec.loader is None:
+            raise VerifyError("could not load plan validator")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        errors, warnings = module.validate(plan)
+    except VerifyError:
+        raise
+    except Exception as exc:
+        raise VerifyError(f"plan validator failed: {type(exc).__name__}: {exc}") from None
+    if errors:
         raise VerifyError("plan is invalid: " + "; ".join(str(error) for error in errors))
-    return payload
+    return {"ok": True, "errors": [], "warnings": warnings}
 
 
 def _select_unit(plan: dict[str, Any], unit_id: str) -> dict[str, Any]:
@@ -284,9 +261,12 @@ def _selected_unit_errors(unit: dict[str, Any]) -> list[str]:
 
 
 def _git_env() -> dict[str, str]:
-    env = os.environ.copy()
+    # Git variables can redirect repository, index, object, and config lookup.
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
     return env
 
 
@@ -296,7 +276,7 @@ def _git(
     *,
     timeout: float = GIT_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[bytes]:
-    command = ["git", "-C", str(repo), *args]
+    command = ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args]
     try:
         return subprocess.run(
             command,
@@ -336,6 +316,73 @@ def _same_path(left: Path, right: Path) -> bool:
         return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(
             os.path.normpath(str(right))
         )
+
+
+def _validate_git_identity(
+    repo: Path, expected_git_dir: str | None, expected_common: str | None
+) -> tuple[Path, Path]:
+    """Reject redirected gitfiles and return the resolved git/common dirs."""
+    dot_git = repo / ".git"
+    if not dot_git.exists():
+        raise VerifyError("repository .git metadata is missing")
+    if dot_git.is_symlink():
+        raise VerifyError("repository .git metadata must not be a symlink")
+    if dot_git.is_dir():
+        expected_git_path = dot_git.resolve(strict=True)
+        expected_common_path = expected_git_path
+    elif dot_git.is_file():
+        if not expected_git_dir or not expected_common:
+            raise VerifyError(
+                "this is a linked worktree; provide --expected-git-dir and --expected-git-common-dir from the trusted parent"
+            )
+        try:
+            content = dot_git.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise VerifyError(f"could not read worktree .git file: {exc}") from None
+        if not content.lower().startswith("gitdir:"):
+            raise VerifyError("worktree .git file has an invalid gitdir reference")
+        gitdir_text = content.split(":", 1)[1].strip()
+        gitdir_candidate = Path(gitdir_text)
+        if not gitdir_candidate.is_absolute():
+            gitdir_candidate = dot_git.parent / gitdir_candidate
+        try:
+            expected_git_path = gitdir_candidate.resolve(strict=True)
+            expected_common_path = Path(expected_common).expanduser().resolve(strict=True)
+            supplied_git_path = Path(expected_git_dir).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise VerifyError(f"could not resolve expected git metadata: {exc}") from None
+        if not expected_common_path.is_dir() or not supplied_git_path.is_dir():
+            raise VerifyError("--expected-git-common-dir must name a directory")
+        if not _same_path(expected_git_path, supplied_git_path):
+            raise VerifyError("worktree .git target does not match --expected-git-dir")
+        allowed_parent = (expected_common_path / "worktrees").resolve()
+        try:
+            expected_git_path.relative_to(allowed_parent)
+        except ValueError:
+            raise VerifyError("worktree .git target is outside the expected repository worktrees directory") from None
+    else:
+        raise VerifyError("repository .git metadata must be a directory or gitfile")
+
+    gitdir_text = _git_text(repo, ["rev-parse", "--absolute-git-dir"])
+    common_text = _git_text(repo, ["rev-parse", "--git-common-dir"])
+    actual_git = Path(gitdir_text).resolve(strict=True)
+    actual_common = Path(common_text)
+    if not actual_common.is_absolute():
+        actual_common = repo / actual_common
+    actual_common = actual_common.resolve(strict=True)
+    if not _same_path(actual_git, expected_git_path):
+        raise VerifyError("git resolved a git directory different from the repository metadata")
+    if not _same_path(actual_common, expected_common_path):
+        raise VerifyError("git common directory does not match the expected repository metadata")
+    if expected_git_dir:
+        supplied_git = Path(expected_git_dir).expanduser().resolve(strict=True)
+        if not _same_path(actual_git, supplied_git):
+            raise VerifyError("git directory does not match --expected-git-dir")
+    if expected_common:
+        supplied = Path(expected_common).expanduser().resolve(strict=True)
+        if not _same_path(actual_common, supplied):
+            raise VerifyError("git common directory does not match --expected-git-common-dir")
+    return actual_git, actual_common
 
 
 def _normalize_scope(scope: str) -> tuple[str | None, str | None]:
@@ -390,8 +437,8 @@ def _scope_has_glob(scope: str) -> bool:
 
 def _literal_path_under(scope: str, path: str) -> bool:
     if os.name == "nt":
-        scope_cmp = scope.casefold()
-        path_cmp = path.casefold()
+        scope_cmp = os.path.normcase(scope).replace("\\", "/")
+        path_cmp = os.path.normcase(path).replace("\\", "/")
     else:
         scope_cmp = scope
         path_cmp = path
@@ -401,14 +448,30 @@ def _literal_path_under(scope: str, path: str) -> bool:
 def _path_matches_scope(path: str, scope: str) -> bool:
     """Match a changed path against one normalized scope.
 
-    Literal scopes name a file or a directory subtree. Glob scopes use Python's
-    ``fnmatch``, the same primitive ``validate_plan.py`` uses for overlap checks;
-    this keeps the harness compatible with the plan contract. A path that does
-    not match is reported as out of scope rather than guessed into scope.
+    Literal scopes name a file or a directory subtree. In glob scopes, ``*``,
+    ``?`` and character classes match within one segment; ``**`` matches zero
+    or more complete path segments. A non-match is out of scope.
     """
 
     if _scope_has_glob(scope):
-        return fnmatch(path, scope)
+        path_parts = path.split("/")
+        scope_parts = scope.split("/")
+
+        def matches(path_index: int, scope_index: int) -> bool:
+            if scope_index == len(scope_parts):
+                return path_index == len(path_parts)
+            if scope_parts[scope_index] == "**":
+                return matches(path_index, scope_index + 1) or (
+                    path_index < len(path_parts)
+                    and matches(path_index + 1, scope_index)
+                )
+            return (
+                path_index < len(path_parts)
+                and fnmatchcase(path_parts[path_index], scope_parts[scope_index])
+                and matches(path_index + 1, scope_index + 1)
+            )
+
+        return matches(0, 0)
     return _literal_path_under(scope, path)
 
 
@@ -484,6 +547,51 @@ def _reader(stream: Any, limit: int, holder: dict[str, Any]) -> None:
         holder["complete"] = True
 
 
+def _parse_argv(command: str) -> list[str]:
+    if os.name != "nt":
+        return shlex.split(command, posix=True)
+    # CommandLineToArgvW follows Windows command-line quoting rules and keeps
+    # ordinary backslashes in unquoted paths intact.
+    argc = ctypes.c_int()
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    argv_ptr = shell32.CommandLineToArgvW(command, ctypes.byref(argc))
+    if not argv_ptr:
+        raise OSError(ctypes.get_last_error(), "CommandLineToArgvW failed")
+    try:
+        return [argv_ptr[index] for index in range(argc.value)]
+    finally:
+        kernel32.LocalFree(argv_ptr)
+
+
+def _kill_process_tree(proc: subprocess.Popen[bytes]) -> None:
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+
 def _not_run_result(index: int, command: str) -> dict[str, Any]:
     return {
         "index": index,
@@ -541,8 +649,8 @@ def _execute_command(
             )
             return result
         try:
-            argv = shlex.split(command, posix=True)
-        except ValueError as exc:
+            argv = _parse_argv(command)
+        except (ValueError, OSError) as exc:
             result["status"] = "invalid_command"
             result["reason"] = f"could not parse command as argv: {exc}"
             return result
@@ -562,6 +670,8 @@ def _execute_command(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             shell=use_shell,
+            start_new_session=(os.name != "nt"),
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
         )
     except FileNotFoundError:
         result["status"] = "spawn_error"
@@ -590,7 +700,7 @@ def _execute_command(
     except subprocess.TimeoutExpired:
         timed_out = True
         try:
-            proc.kill()
+            _kill_process_tree(proc)
         except OSError:
             pass
         try:
@@ -602,6 +712,7 @@ def _execute_command(
         reader.join(timeout=5)
     capture_complete = not any(reader.is_alive() for reader in readers)
     if not capture_complete:
+        _kill_process_tree(proc)
         for stream in (proc.stdout, proc.stderr):
             try:
                 stream.close()
@@ -624,6 +735,9 @@ def _execute_command(
     if timed_out:
         result["status"] = "timeout"
         result["reason"] = f"command exceeded the {timeout:g}s timeout and was killed"
+    elif not capture_complete:
+        result["status"] = "fail"
+        result["reason"] = "command output capture did not complete; descendant processes may remain"
     elif exit_code == 0:
         result["status"] = "pass"
     else:
@@ -643,7 +757,7 @@ def _verify(args: argparse.Namespace, started: float) -> tuple[dict[str, Any], i
     max_output_bytes = _positive_integer(args.max_output_bytes, "--max-output-bytes")
 
     plan = _load_plan(plan_path)
-    plan_validation = _run_plan_validator(plan_path)
+    plan_validation = _run_plan_validator(plan)
     unit = _select_unit(plan, args.unit)
     unit_errors = _selected_unit_errors(unit)
     if unit_errors:
@@ -671,8 +785,11 @@ def _verify(args: argparse.Namespace, started: float) -> tuple[dict[str, Any], i
         raise VerifyError(
             f"repo must be the git worktree top level; {repo_path} resolves to {top_level}"
         )
+    git_dir, git_common_dir = _validate_git_identity(
+        repo_path, args.expected_git_dir, args.expected_git_common_dir
+    )
 
-    head_proc = _git(repo_path, ["rev-parse", "--verify", "--quiet", "HEAD"])
+    head_proc = _git(repo_path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
     if head_proc.returncode != 0:
         raise VerifyError("HEAD is missing; cannot compare base..HEAD")
     head_sha = _decode(head_proc.stdout).strip()
@@ -798,7 +915,39 @@ def _verify(args: argparse.Namespace, started: float) -> tuple[dict[str, Any], i
                 )
             )
 
-    command_failed = any(item.get("status") != "pass" for item in command_results)
+    post_state_errors: list[str] = []
+    head_after: str | None = None
+    working_tree_dirty_after: bool | None = None
+    untracked_after: bool | None = None
+    try:
+        _validate_git_identity(
+            repo_path, args.expected_git_dir, args.expected_git_common_dir
+        )
+        after_proc = _git(repo_path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        if after_proc.returncode == 0:
+            head_after = _decode(after_proc.stdout).strip()
+        else:
+            post_state_errors.append("could not resolve HEAD after command execution")
+        if head_after and head_after != head_sha:
+            post_state_errors.append(
+                "HEAD moved during command execution; committed changes after the initial snapshot are not covered"
+            )
+        dirty_after_proc = _git_optional(
+            repo_path, ["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--"]
+        )
+        if dirty_after_proc is not None and dirty_after_proc.returncode in (0, 1):
+            working_tree_dirty_after = dirty_after_proc.returncode == 1
+        untracked_after_proc = _git_optional(
+            repo_path, ["ls-files", "--others", "--exclude-standard", "-z"]
+        )
+        if untracked_after_proc is not None and untracked_after_proc.returncode == 0:
+            untracked_after = bool(
+                [path for path in _decode(untracked_after_proc.stdout).split("\x00") if path]
+            )
+    except VerifyError as exc:
+        post_state_errors.append(f"could not verify repository state after commands: {exc}")
+
+    command_failed = any(item.get("status") != "pass" for item in command_results) or bool(post_state_errors)
     limitations = _base_limitations()
     if not declared_commands:
         limitations.append(
@@ -816,6 +965,16 @@ def _verify(args: argparse.Namespace, started: float) -> tuple[dict[str, Any], i
         limitations.append(
             "Untracked files existed before verification. They are not included in the base..HEAD scope check."
         )
+    if working_tree_dirty_after:
+        limitations.append(
+            "Tracked uncommitted changes existed after command execution. They are not included in the base..HEAD scope check."
+        )
+    if untracked_after:
+        limitations.append(
+            "Untracked files existed after command execution. They are not included in the base..HEAD scope check."
+        )
+    if working_tree_dirty_after is None or untracked_after is None:
+        limitations.append("Could not fully determine post-command working-tree status.")
     if base_is_ancestor is False:
         limitations.append(
             "The base commit is not an ancestor of HEAD; the base..HEAD diff is between two divergent endpoints."
@@ -848,6 +1007,7 @@ def _verify(args: argparse.Namespace, started: float) -> tuple[dict[str, Any], i
             for item in command_results
             if item.get("status") != "pass"
         ]
+        errors.extend(post_state_errors)
         if not scope_clean:
             errors.append(
                 "write scope check failed: "
@@ -897,17 +1057,23 @@ def _verify(args: argparse.Namespace, started: float) -> tuple[dict[str, Any], i
                 "requested_path": str(requested_repo),
                 "resolved_path": str(repo_path),
                 "top_level": str(top_level),
+                "git_dir": str(git_dir),
+                "git_common_dir": str(git_common_dir),
             },
             "git": {
                 "base_ref": base_ref,
                 "base_commit": base_sha,
                 "head_commit": head_sha,
+                "head_commit_after": head_after,
+                "head_moved_during_verification": bool(head_after and head_after != head_sha),
                 "branch": branch,
                 "detached": detached,
                 "base_is_ancestor": base_is_ancestor,
                 "range": f"{base_sha}..{head_sha}",
                 "working_tree_dirty_before": working_tree_dirty,
                 "untracked_before": untracked_before,
+                "working_tree_dirty_after": working_tree_dirty_after,
+                "untracked_after": untracked_after,
             },
             "changed_paths": changed_paths,
             "write_scope": raw_write_scope,
@@ -942,6 +1108,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan", required=True, help="Path to the delegation plan JSON.")
     parser.add_argument("--unit", required=True, help="Unit id to verify.")
     parser.add_argument("--repo", required=True, help="Git worktree top-level path.")
+    parser.add_argument(
+        "--expected-git-dir",
+        help="Trusted per-worktree .git directory; required with --expected-git-common-dir for linked worktrees.",
+    )
+    parser.add_argument(
+        "--expected-git-common-dir",
+        help="Trusted common .git directory for linked worktrees; required when --repo uses a .git file.",
+    )
     parser.add_argument("--base", required=True, help="Base commit-ish for the diff.")
     parser.add_argument(
         "--timeout",

@@ -148,6 +148,8 @@ It validates the plan first, runs the unit's declared commands in the repository
 
 Commands are trusted code, inherit the caller's environment, and execute with the caller's privileges. Without `--allow-commands` the harness refuses to run anything. Without `--shell` it parses commands as argv and refuses unquoted shell operators; `--shell` is an explicit opt-in. It never reads credential files or secret stores, does not reset or clean the repository, and leaves no log artifacts. It does not append to the outcome ledger: review the JSON and record the outcome manually when the evidence warrants it. See [`references/operations.md`](.opencode/skills/subagent-orchestrator/references/operations.md) §8.
 
+For linked Git worktrees, pass `--expected-git-dir` and `--expected-git-common-dir` from the trusted parent. Git preflight ignores inherited `GIT_*` overrides and disables repository `core.fsmonitor` hooks. The plan is loaded and validated as one snapshot; the harness reports post-command working-tree state and fails if a command moves `HEAD`.
+
 ## Project classifier
 
 The second skill builds a **project-local tool router** from repository evidence. It answers competing language/engine/tool questions and "which test command?" without guessing from the model's preferences.
