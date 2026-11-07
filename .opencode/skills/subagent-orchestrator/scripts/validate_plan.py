@@ -32,7 +32,7 @@ ROLES = {"research", "design", "implementation", "test", "review", "general"}
 ISOLATION = {"shared", "worktree"}
 MODES = {"async", "wait"}
 ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
-TOP_LEVEL_KEYS = {"goal", "mode", "ignore_cost", "budget", "units", "integration", "fallback"}
+TOP_LEVEL_KEYS = {"goal", "mode", "ignore_cost", "budget", "units", "integration", "fallback", "repos"}
 UNIT_KEYS = {
     "id",
     "title",
@@ -47,11 +47,12 @@ UNIT_KEYS = {
     "commands",
     "deliverable",
     "brief",
+    "repo",
 }
 TARGET_KEYS = {"providerInstanceId", "model", "options"}
 OPTION_KEYS = {"id", "value"}
 BUDGET_KEYS = {"unit", "estimated_units", "remaining_units", "note"}
-INTEGRATION_KEYS = {"order", "tests", "review", "notes"}
+INTEGRATION_KEYS = {"order", "tests", "review", "notes", "stack"}
 
 
 def finite_nonnegative(value: Any) -> float | None:
@@ -177,6 +178,18 @@ def load_plan(path: Path) -> dict[str, Any]:
 def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
+    multi_repo = "repos" in plan
+    repos = plan.get("repos", {})
+    if multi_repo and not isinstance(repos, dict):
+        errors.append("repos must be an object")
+        repos = {}
+    if isinstance(repos, dict):
+        for key, item in repos.items():
+            if not isinstance(item, dict): errors.append(f"repos.{key} must be an object"); continue
+            if not isinstance(item.get("remote"), str) or not item["remote"].strip(): errors.append(f"repos.{key}.remote must be a non-empty string")
+            for field in ("base_branch", "integration_branch", "local_path"):
+                if field in item and not isinstance(item[field], str): errors.append(f"repos.{key}.{field} must be a string")
+            if set(item) - {"remote", "base_branch", "integration_branch", "local_path"}: errors.append(f"repos.{key}: unknown key")
 
     for key in sorted(set(plan) - TOP_LEVEL_KEYS):
         errors.append(f"unknown top-level key {key!r}")
@@ -250,6 +263,9 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
             errors.append(f"{uid}: title must be a non-empty string")
 
         role = unit.get("role")
+        repo_key = unit.get("repo")
+        if repo_key is not None and (not isinstance(repo_key, str) or repo_key not in repos):
+            errors.append(f"{uid}: unknown repo key {repo_key!r}")
         if not isinstance(role, str) or role not in ROLES:
             errors.append(f"{uid}: role must be one of {sorted(ROLES)}")
 
@@ -319,6 +335,10 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
                         errors.append(f"{uid}: target.options[{j}].value must be a scalar")
 
         write_scope = unit.get("write_scope", [])
+        if multi_repo and role == "implementation" and isinstance(write_scope, list) and write_scope and not repo_key:
+            errors.append(f"{uid}: implementation unit with write_scope must name a repo")
+        if multi_repo and isinstance(write_scope, list) and any(isinstance(s, str) and re.match(r"^[^/]+:", s) for s in write_scope):
+            errors.append(f"{uid}: write_scope must not encode a repo prefix; use the repo field")
         if not isinstance(write_scope, list):
             errors.append(f"{uid}: write_scope must be an array")
         else:
@@ -354,6 +374,20 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
         deliverable = unit.get("deliverable")
         if not isinstance(deliverable, str) or not deliverable.strip():
             errors.append(f"{uid}: deliverable must be a non-empty string")
+        watch_request = any(
+            isinstance(x, str)
+            and re.search(
+                r"\b(?:watch|babysit)\b.{0,80}\b(?:PR|pull request)\b|"
+                r"\b(?:PR|pull request)\b.{0,80}\b(?:watch|babysit)\b",
+                x,
+                re.I,
+            )
+            for x in (brief, deliverable)
+        )
+        if multi_repo and watch_request:
+            errors.append(f"{uid}: child must not watch or babysit a PR")
+        elif not multi_repo and watch_request:
+            warnings.append(f"{uid}: child brief/deliverable mentions watching a PR")
 
         if role == "implementation" and not write_scope and isolation == "worktree":
             warnings.append(f"{uid}: implementation worktree has no write_scope")
@@ -433,6 +467,31 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
         if not isinstance(review, bool):
             errors.append("integration.review must be a boolean")
 
+        stack = integration.get("stack")
+        if stack is not None:
+            if not multi_repo: errors.append("integration.stack requires repos")
+            if not isinstance(stack, list): errors.append("integration.stack must be an array"); stack = []
+            seen_stack: set[str] = set(); produced: dict[str, set[str]] = {}; prior: set[str] = set()
+            for index, entry in enumerate(stack):
+                label = f"integration.stack[{index}]"
+                if not isinstance(entry, dict): errors.append(f"{label} must be an object"); continue
+                if set(entry) != {"repo", "units", "pr_base"}: errors.append(f"{label} needs repo, units, and pr_base")
+                rk, members, base = entry.get("repo"), entry.get("units"), entry.get("pr_base")
+                if rk not in repos: errors.append(f"{label}: unknown repo key {rk!r}")
+                if not isinstance(members, list) or not members or any(not isinstance(x, str) for x in members): errors.append(f"{label}.units must be a non-empty string array"); members = []
+                for member in members:
+                    if member in seen_stack: errors.append(f"integration.stack contains unit {member!r} more than once")
+                    seen_stack.add(member)
+                    if member not in by_id: errors.append(f"{label} references unknown unit {member!r}"); continue
+                    if by_id[member].get("repo") != rk: errors.append(f"{member}: stack repo does not match unit repo")
+                    for dep in unit_dependencies(by_id[member]):
+                        if dep in by_id and dep not in prior: errors.append(f"integration.stack puts {member} before dependency {dep}")
+                    prior.add(member)
+                valid_bases = {repos.get(rk, {}).get("base_branch"), repos.get(rk, {}).get("integration_branch")} | produced.get(rk, set()) if isinstance(repos.get(rk), dict) else set()
+                if base not in valid_bases: errors.append(f"{label}.pr_base must be repo base/integration branch or an earlier unit branch")
+                for member in members:
+                    if member in by_id: produced.setdefault(rk, set()).add(member)
+
         # Two children must not write the same path in a shared checkout.
         shared_writers = [
             (uid, unit)
@@ -446,6 +505,8 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
                 scope for scope in left_unit.get("write_scope", []) if isinstance(scope, str)
             ]
             for right_id, right_unit in shared_writers[left_index + 1:]:
+                if multi_repo and left_unit.get("repo") != right_unit.get("repo"):
+                    continue
                 right_scopes = [
                     scope for scope in right_unit.get("write_scope", []) if isinstance(scope, str)
                 ]
