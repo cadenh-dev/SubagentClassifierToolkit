@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Read-only Git hygiene scan and confirmation-gated cleanup."""
+"""Inspect Git worktrees, branches, and GitHub PRs; clean only after confirmation.
+
+Scan is read-only. Apply rechecks repository state and uses only ordinary Git
+removal commands. All subprocesses have bounded timeouts.
+
+Exit codes: 0 success, 1 refused/failed cleanup, 2 invalid input or scan error.
+"""
 from __future__ import annotations
 
 import argparse
@@ -10,157 +16,321 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-TIMEOUT = 15
+TIMEOUT = 20
 
 
 class JanitorError(Exception):
-    pass
+    """An actionable repository or command error."""
 
 
-def run(args: list[str], cwd: Path, check: bool = True) -> str:
+def command(argv: list[str], cwd: Path, *, check: bool = True) -> subprocess.CompletedProcess[str]:
     try:
-        p = subprocess.run(args, cwd=cwd, text=True, capture_output=True, timeout=TIMEOUT)
+        result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True,
+                                timeout=TIMEOUT, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise JanitorError(f"command failed or timed out: {args[0]}") from exc
-    if check and p.returncode:
-        raise JanitorError(p.stderr.strip() or f"command failed: {' '.join(args)}")
-    return p.stdout.strip()
+        raise JanitorError(f"command failed or timed out: {argv[0]}") from exc
+    if check and result.returncode:
+        raise JanitorError(result.stderr.strip() or f"command failed: {' '.join(argv)}")
+    return result
 
 
 def git(repo: Path, *args: str, check: bool = True) -> str:
-    return run(["git", "-C", str(repo), *args], repo, check)
+    return command(["git", "-C", str(repo), *args], repo, check=check).stdout.strip()
 
 
-def identity(f: dict) -> str:
-    return f.get("path") or f.get("branch") or str(f.get("pr"))
+def git_ok(repo: Path, *args: str) -> bool:
+    return command(["git", "-C", str(repo), *args], repo, check=False).returncode == 0
 
 
-def add(items: list[dict], kind: str, ident: str, reasons: list[str], safe: bool, action: str, **extra: str) -> None:
-    raw = f"{kind}:{ident}".encode()
-    items.append({"id": hashlib.sha256(raw).hexdigest()[:12], "kind": kind, **extra,
-                  "reasons": sorted(set(reasons)), "safe_to_remove": safe,
-                  "suggested_action": action})
+def finding(kind: str, identity: str, reasons: list[str], safe: bool,
+            action: str, **fields: Any) -> dict[str, Any]:
+    prefix = {"worktree": "wt", "branch": "br", "pr": "pr", "skip": "skip"}[kind]
+    return {"id": f"{prefix}:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}", "kind": kind, **fields,
+            "reasons": sorted(set(reasons)), "safe_to_remove": safe,
+            "suggested_action": action}
 
 
-def resolve_base(repo: Path, base: str) -> str:
-    if base == "origin/HEAD":
-        symbolic = git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", check=False)
-        base = symbolic.removeprefix("refs/remotes/") if symbolic else "main"
-    return git(repo, "rev-parse", "--verify", base)
+def finding_id(kind: str, identity: str) -> str:
+    prefix = {"worktree": "wt", "branch": "br", "pr": "pr", "skip": "skip"}[kind]
+    return f"{prefix}:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}"
 
 
-def scan(repo: Path, base_arg: str, stale_days: int) -> list[dict]:
-    repo = Path(git(repo, "rev-parse", "--show-toplevel"))
+def resolve_base(repo: Path, requested: str | None) -> str:
+    if requested:
+        result = command(["git", "-C", str(repo), "rev-parse", "--verify", f"{requested}^{{commit}}"], repo, check=False)
+        if result.returncode:
+            raise JanitorError(f"base ref not found or not a commit: {requested}")
+        return result.stdout.strip()
+    symbolic = git(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD", check=False)
+    candidates = [symbolic, "main", "master"]
+    for ref in candidates:
+        if ref and git_ok(repo, "rev-parse", "--verify", f"{ref}^{{commit}}"):
+            return git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    raise JanitorError("could not resolve base: pass --base, or provide origin/HEAD, local main, or local master")
+
+
+def base_branch_name(repo: Path, requested: str | None) -> str | None:
+    ref = requested
+    if not ref:
+        ref = git(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD", check=False)
+        if not ref:
+            for candidate in ("main", "master"):
+                if git_ok(repo, "rev-parse", "--verify", f"{candidate}^{{commit}}"):
+                    return candidate
+    if not ref or ref.startswith("-"):
+        return None
+    if git_ok(repo, "rev-parse", "--verify", f"refs/heads/{ref}^{{commit}}"):
+        return ref
+    return ref.rsplit("/", 1)[-1]
+
+
+def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    return git_ok(repo, "merge-base", "--is-ancestor", ancestor, descendant)
+
+
+def unique_commits(repo: Path, branch: str, base: str) -> bool:
+    result = command(["git", "-C", str(repo), "rev-list", "--count", f"{base}..{branch}"], repo, check=False)
+    return result.returncode != 0 or result.stdout.strip() not in ("", "0")
+
+
+def parse_worktrees(repo: Path) -> list[dict[str, Any]]:
+    raw = git(repo, "worktree", "list", "--porcelain")
+    blocks = [block for block in raw.split("\n\n") if block.strip()]
+    parsed = []
+    for block in blocks:
+        lines = block.splitlines()
+        path = Path(lines[0][9:])
+        parsed.append({"path": path, "lines": lines,
+                       "branch": next((line[7:] for line in lines if line.startswith("branch ")), None),
+                       "detached": "detached" in lines,
+                       "locked": any(line == "locked" or line.startswith("locked ") for line in lines),
+                       "prunable": any(line == "prunable" or line.startswith("prunable ") for line in lines)})
+    return parsed
+
+
+def github_remote(repo: Path) -> bool:
+    names = git(repo, "remote", check=False).splitlines()
+    for name in names:
+        for key in ("remote." + name + ".url", "remote." + name + ".pushurl"):
+            urls = git(repo, "config", "--get-all", key, check=False).splitlines()
+            for url in urls:
+                if "github.com:" in url.lower() or "github.com/" in url.lower():
+                    return True
+    return False
+
+
+def scan(repo_arg: Path, base_arg: str | None, stale_days: int,
+         gh_executable: str | None = None) -> list[dict[str, Any]]:
+    repo = Path(git(repo_arg, "rev-parse", "--show-toplevel")).resolve()
     base = resolve_base(repo, base_arg)
+    base_name = base_branch_name(repo, base_arg)
     now = datetime.now(timezone.utc).timestamp()
-    items: list[dict] = []
-    current = Path(git(repo, "rev-parse", "--show-toplevel"))
-    for line in git(repo, "worktree", "list", "--porcelain").splitlines():
-        if not line.startswith("worktree "):
-            continue
-        path = Path(line[9:])
-        details = git(repo, "worktree", "list", "--porcelain", "-z")
-        block = next((b for b in details.split("\0\0") if b.startswith("worktree " + str(path))), "")
-        reasons = []
-        if not path.exists(): reasons.append("missing directory")
-        if "prunable" in block: reasons.append("prunable")
-        if "detached" in block: reasons.append("detached")
-        if "locked" in block: reasons.append("locked")
-        branch = next((x[7:] for x in block.split("\0") if x.startswith("branch ")), "")
-        dirty = bool(run(["git", "-C", str(path), "status", "--porcelain"], repo, check=False)) if path.exists() else False
-        if dirty: reasons.append("dirty")
-        merged = bool(branch and git(repo, "merge-base", "--is-ancestor", branch, base, check=False) == "")
-        unique = bool(branch and git(repo, "rev-list", "--count", f"{base}..{branch}", check=False) not in ("", "0"))
-        if merged: reasons.append("branch merged into base")
-        last = git(repo, "-C", str(path), "log", "-1", "--format=%ct", check=False) if path.exists() else ""
-        if last and now - int(last) >= stale_days * 86400: reasons.append(f"no commits in {stale_days} days")
-        if reasons:
-            current_path = Path(run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], repo, check=False)) if path.exists() else current
-            safe = not dirty and "locked" not in reasons and current_path != current and not unique
-            add(items, "worktree", str(path), reasons, safe, "git worktree remove <path>" if path.exists() else "git worktree prune", path=str(path))
+    items: list[dict[str, Any]] = []
+    worktrees = parse_worktrees(repo)
+    main_path = worktrees[0]["path"].resolve()
+    current_path = Path(git(repo_arg, "rev-parse", "--show-toplevel")).resolve()
 
+    for entry in worktrees:
+        path: Path = entry["path"]
+        reasons: list[str] = []
+        exists = path.is_dir()
+        if not exists:
+            reasons.extend(["missing directory", "prunable"])
+        if entry["prunable"] and "prunable" not in reasons:
+            reasons.append("prunable")
+        if entry["detached"]:
+            reasons.append("detached")
+        if entry["locked"]:
+            reasons.append("locked")
+        dirty = exists and bool(git(path, "status", "--porcelain"))
+        if dirty:
+            reasons.append("dirty")
+        branch = entry["branch"]
+        commit = git(path, "rev-parse", "HEAD", check=False) if exists else ""
+        if branch and path.resolve() != main_path and git_ok(repo, "merge-base", "--is-ancestor", branch, base):
+            reasons.append("branch merged into base")
+        elif commit and is_ancestor(repo, commit, base):
+            reasons.append("worktree commit merged into base")
+        if exists:
+            stamp = git(path, "log", "-1", "--format=%ct", check=False)
+            if stamp and stamp.isdigit() and now - int(stamp) >= stale_days * 86400:
+                reasons.append(f"no commits in {stale_days} days")
+        if reasons:
+            main = path.resolve() == main_path
+            current = path.resolve() == current_path
+            has_unique = (unique_commits(repo, branch, base) if branch else
+                          bool(commit and not is_ancestor(repo, commit, base)))
+            safe = not main and not current and not dirty and not entry["locked"] and not has_unique
+            action = f"git worktree remove {path}" if exists else "git worktree prune"
+            items.append(finding("worktree", str(path), reasons, safe, action, path=str(path)))
+
+    current_branch = git(repo_arg, "branch", "--show-current")
     branches = git(repo, "for-each-ref", "--format=%(refname:short)%09%(upstream:track)%09%(upstream)", "refs/heads").splitlines()
     for line in branches:
-        name, track, upstream = (line.split("\t") + ["", ""])[:3]
+        parts = (line.split("\t") + ["", ""])[:3]
+        name, tracking, upstream = parts
+        if not name or name == current_branch:
+            continue
+        if name == base_name:
+            continue
         reasons = []
-        merged = git(repo, "merge-base", "--is-ancestor", name, base, check=False) == ""
-        if merged: reasons.append("merged into base")
-        if upstream and "[gone]" in track: reasons.append("upstream gone")
-        if not upstream and git(repo, "rev-list", "--count", f"{base}..{name}", check=False) == "0": reasons.append("no upstream and no unique commits")
-        branch_path = git(repo, "worktree", "list", "--porcelain").splitlines()
-        current_branch = git(repo, "branch", "--show-current")
-        if name == current_branch: reasons = []
+        merged = is_ancestor(repo, name, base)
+        if merged:
+            reasons.append("merged into base")
+        if upstream and "[gone]" in tracking:
+            reasons.append("upstream gone")
+        no_unique_no_upstream = not upstream and not unique_commits(repo, name, base)
+        if no_unique_no_upstream:
+            reasons.append("no upstream and no unique commits")
+        if unique_commits(repo, name, base):
+            reasons.append("unique commits not in base")
         if reasons:
-            add(items, "branch", name, reasons, merged or ("upstream gone" in reasons and not git(repo, "rev-list", "--count", f"{base}..{name}")), f"git branch -d {name}", branch=name)
+            safe = merged or ("upstream gone" in reasons and not unique_commits(repo, name, base)) or no_unique_no_upstream
+            items.append(finding("branch", name, reasons, safe, f"git branch -d {name}", branch=name))
 
-    if shutil.which("gh"):
-        auth = run(["gh", "auth", "status"], repo, check=False)
-        if "Logged in" in auth:
-            data = run(["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "number,state,headRefName,updatedAt,mergedAt"], repo)
-            for pr in json.loads(data):
-                state, head, number = pr["state"], pr["headRefName"], str(pr["number"])
+    gh = gh_executable or shutil.which("gh")
+    if not gh:
+        items.append(finding("skip", "prs", ["gh is not available; PR scan skipped"], False, "install/authenticate gh to scan PRs"))
+    elif not github_remote(repo):
+        items.append(finding("skip", "prs", ["no GitHub remote; PR scan skipped"], False, "add a GitHub remote to scan PRs"))
+    else:
+        auth = command([gh, "auth", "status"], repo, check=False)
+        if auth.returncode:
+            items.append(finding("skip", "prs", ["gh is not authenticated; PR scan skipped"], False, "run gh auth login to scan PRs"))
+        else:
+            result = command([gh, "pr", "list", "--state", "all", "--limit", "200", "--json",
+                              "number,state,headRefName,headRefOid,updatedAt,mergedAt"], repo)
+            try:
+                prs = json.loads(result.stdout)
+                if not isinstance(prs, list):
+                    raise ValueError("expected JSON array")
+            except ValueError as exc:
+                raise JanitorError(f"gh returned invalid PR JSON: {exc}") from None
+            for pr in prs:
+                state, head, number = pr.get("state"), pr.get("headRefName", ""), str(pr.get("number", ""))
                 reasons = []
-                updated = datetime.fromisoformat(pr["updatedAt"].replace("Z", "+00:00")).timestamp()
-                if state == "OPEN" and now - updated >= stale_days * 86400: reasons.append("no activity")
-                if state == "OPEN" and git(repo, "merge-base", "--is-ancestor", head, base, check=False) == "": reasons.append("head branch merged into base")
-                exists = git(repo, "show-ref", "--verify", f"refs/heads/{head}", check=False)
-                if state == "CLOSED" and not pr.get("mergedAt") and exists: reasons.append("closed unmerged; local branch exists")
-                if reasons: add(items, "pr", number, reasons, False, f"gh pr close {number} (human decision required)", pr=number)
-    return sorted(items, key=lambda f: f["id"])
+                updated_text = pr.get("updatedAt")
+                if state == "OPEN" and updated_text:
+                    updated = datetime.fromisoformat(updated_text.replace("Z", "+00:00")).timestamp()
+                    if now - updated >= stale_days * 86400:
+                        reasons.append("no activity")
+                head_oid = pr.get("headRefOid")
+                if state == "OPEN" and head_oid and git_ok(repo, "cat-file", "-e", f"{head_oid}^{{commit}}") and is_ancestor(repo, head_oid, base):
+                    reasons.append("head branch merged into base")
+                exists = git_ok(repo, "show-ref", "--verify", f"refs/heads/{head}")
+                if state == "CLOSED" and not pr.get("mergedAt") and exists:
+                    reasons.append("closed unmerged; local branch exists")
+                if reasons:
+                    items.append(finding("pr", number, reasons, False,
+                        f"human review: gh pr view {number} (no PR changes are made)", pr=number))
+    return sorted(items, key=lambda item: item["id"])
 
 
-def clean(repo: Path, findings: list[dict], ids: list[str], apply: bool) -> int:
-    by_id = {f["id"]: f for f in findings}
-    missing = sorted(set(ids) - by_id.keys())
-    if missing: raise ValueError("unknown finding id(s): " + ", ".join(missing))
+def clean(repo_arg: Path, findings: list[dict[str, Any]], ids: list[str], apply: bool,
+          base_arg: str | None) -> int:
+    by_id = {item["id"]: item for item in findings}
+    unknown = sorted(set(ids) - by_id.keys())
+    if unknown:
+        branch_names = git(repo_arg, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines()
+        current = git(repo_arg, "branch", "--show-current")
+        refused = [name for name in branch_names if name == current and finding_id("branch", name) in unknown]
+        if refused:
+            print("refused: current branch: " + ", ".join(refused))
+            return 1
+        raise ValueError("unknown finding id(s): " + ", ".join(unknown))
+    repo = Path(git(repo_arg, "rev-parse", "--show-toplevel")).resolve()
+    base = resolve_base(repo, base_arg)
     failed = False
     for ident in ids:
-        f = by_id[ident]
+        item = by_id[ident]
         if not apply:
-            print(f"would: {f['suggested_action']} [{ident}]"); continue
-        if f["kind"] == "pr":
-            print(f"manual only: {f['suggested_action']}"); continue
-        if not f["safe_to_remove"]:
-            print(f"refused {ident}: finding is not marked safe; re-scan and inspect state"); failed = True; continue
+            print(f"would: {item['suggested_action']} [{ident}]")
+            continue
+        if item["kind"] in ("pr", "skip"):
+            print(f"manual only: {item['suggested_action']}")
+            continue
         try:
-            if f["kind"] == "worktree":
-                path = Path(f["path"])
-                if path.exists() and git(repo, "-C", str(path), "status", "--porcelain"):
-                    raise JanitorError("worktree is dirty")
-                if path.resolve() == Path(git(repo, "rev-parse", "--show-toplevel")).resolve(): raise JanitorError("current worktree")
-                git(repo, "worktree", "remove", str(path)) if path.exists() else git(repo, "worktree", "prune")
-            else:
-                branch = f["branch"]
-                if git(repo, "rev-list", "--count", f"{resolve_base(repo, 'main')}..{branch}") not in ("0", ""): raise JanitorError("branch has unique commits")
+            if item["kind"] == "worktree":
+                path = Path(item["path"])
+                entries = parse_worktrees(repo)
+                entry = next((entry for entry in entries if str(entry["path"]) == str(path)), None)
+                main_path = entries[0]["path"].resolve() if entries else repo
+                current_path = Path(git(repo_arg, "rev-parse", "--show-toplevel")).resolve()
+                if path.resolve() == main_path or path.resolve() == current_path:
+                    raise JanitorError("refusing current or main worktree")
+                if entry and entry["locked"]:
+                    raise JanitorError("worktree is locked")
+                branch = entry["branch"] if entry else None
+                if branch and unique_commits(repo, branch, base):
+                    raise JanitorError("worktree has commits not in base")
+                if path.exists():
+                    if git(path, "status", "--porcelain"):
+                        raise JanitorError("worktree is dirty")
+                    commit = git(path, "rev-parse", "HEAD")
+                    if (branch and unique_commits(repo, branch, base)) or (not branch and not is_ancestor(repo, commit, base)):
+                        raise JanitorError("worktree has commits not in base")
+                    git(repo, "worktree", "remove", str(path))
+                else:
+                    git(repo, "worktree", "prune")
+                print(f"removed {ident}")
+            elif item["kind"] == "branch":
+                branch = item["branch"]
+                if branch == git(repo_arg, "branch", "--show-current"):
+                    raise JanitorError("refusing current branch")
+                if git_ok(repo, "show-ref", "--verify", f"refs/heads/{branch}") is False:
+                    raise JanitorError("branch no longer exists")
+                if unique_commits(repo, branch, base):
+                    raise JanitorError("branch has commits not in base")
+                if branch_in_main_worktree(repo, branch):
+                    raise JanitorError("branch is checked out in the main worktree")
                 git(repo, "branch", "-d", branch)
-            print(f"removed {ident}")
+                print(f"removed {ident}")
         except JanitorError as exc:
-            print(f"refused {ident}: {exc}"); failed = True
+            print(f"refused {ident}: {exc}")
+            failed = True
     return 1 if failed else 0
 
 
+def branch_in_main_worktree(repo: Path, branch: str) -> bool:
+    entries = parse_worktrees(repo)
+    return any(entry["branch"] == f"refs/heads/{branch}" and entry["path"].resolve() == entries[0]["path"].resolve() for entry in entries)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command")
     for name in ("scan", "clean"):
         p = sub.add_parser(name)
         p.add_argument("--repo", type=Path, default=Path.cwd())
-        p.add_argument("--base", default="origin/HEAD")
+        p.add_argument("--base", help="base ref (default: origin/HEAD, main, or master)")
         p.add_argument("--stale-days", type=int, default=14)
         p.add_argument("--json", action="store_true")
-        if name == "clean": p.add_argument("--apply", action="store_true"); p.add_argument("--id", action="append", required=True)
+        p.add_argument("--gh", help="gh executable path (primarily useful for testing)")
+        if name == "clean":
+            p.add_argument("--apply", action="store_true")
+            p.add_argument("--id", action="append", required=True)
     args = parser.parse_args()
-    if not args.command: args.command = "scan"; args.repo=Path.cwd(); args.base="origin/HEAD"; args.stale_days=14; args.json=False
-    if args.stale_days < 0: parser.error("--stale-days must be non-negative")
+    if args.command is None:
+        args.command, args.repo, args.base, args.stale_days, args.json, args.gh = "scan", Path.cwd(), None, 14, False, None
+    if args.stale_days < 0:
+        parser.error("--stale-days must be non-negative")
     try:
-        findings = scan(args.repo, args.base, args.stale_days)
+        findings = scan(args.repo, args.base, args.stale_days, args.gh)
         if args.command == "scan":
-            print(json.dumps(findings, indent=2) if args.json else "\n".join(f"{f['id']} {f['kind']}: {f['reasons']} — {f['suggested_action']}" for f in findings) or "No findings.")
+            if args.json:
+                print(json.dumps(findings, indent=2))
+            else:
+                print("\n".join(f"{f['id']} {f['kind']}: {', '.join(f['reasons'])} — {f['suggested_action']}" for f in findings) or "No findings.")
             return 0
-        return clean(args.repo, findings, args.id, args.apply)
-    except (JanitorError, ValueError) as exc:
-        print(str(exc), file=sys.stderr); return 1
+        return clean(args.repo, findings, args.id, args.apply, args.base)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except JanitorError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
