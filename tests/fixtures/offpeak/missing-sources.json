@@ -1,0 +1,1 @@
+{"schema_version":1,"rules":[{"id":"bad","match":{"model_patterns":["deepseek*"]},"enforce":"default","peak_windows_utc":[],"holidays":{"timezone":"UTC","dates":[]},"sources":[]}]}
