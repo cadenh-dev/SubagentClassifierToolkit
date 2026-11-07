@@ -1,0 +1,1 @@
+{"schema_version":1,"models":[{"provider_hint":"X","model":"x-1","context_window":1,"max_output":1,"tool_calling":true,"image_input":true,"structured_output":true,"streaming":true,"notes":"n","sources":[],"retrieved":"2026-11-07","verified":false}]}
