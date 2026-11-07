@@ -150,9 +150,15 @@ def windows_ahead(at: datetime, rule: dict[str, Any], count: int) -> list[tuple[
 def fmt(value: datetime, zone: timezone | ZoneInfo) -> str:
     return value.astimezone(zone).isoformat()
 
-def status_payload(target: str, at: datetime, zone: timezone | ZoneInfo, rule: dict[str, Any] | None) -> dict[str, Any]:
+def opted_in(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "opt_in", False)) or os.getenv("OFFPEAK_OPT_IN") == "1"
+
+
+def status_payload(target: str, at: datetime, zone: timezone | ZoneInfo, rule: dict[str, Any] | None,
+                   opt_in: bool = False) -> dict[str, Any]:
     peak = bool(rule and is_peak(at, rule))
-    payload: dict[str, Any] = {"gated": bool(rule), "enforce": rule["enforce"] if rule else None,
+    enforced = bool(rule) and (rule["enforce"] == "default" or opt_in)
+    payload: dict[str, Any] = {"gated": enforced, "enforce": rule["enforce"] if rule else None,
         "rule_id": rule["id"] if rule else None, "is_peak": peak, "now_local": fmt(at, zone),
         "current_window_ends_local": None, "next_offpeak_start_local": None, "next_offpeak_start_utc": None,
         "seconds_until_offpeak": 0, "reason": "unmatched target" if not rule else ("peak pricing window" if peak else "off-peak window")}
@@ -183,21 +189,22 @@ def gate_result(target: str, args: argparse.Namespace, rules: list[dict[str, Any
     at = parse_now(args.now)
     zone = get_zone(args.tz)
     rule = find_rule(target, rules)
-    payload = status_payload(target, at, zone, rule)
+    payload = status_payload(target, at, zone, rule, opted_in(args))
     if args.force:
         payload["reason"] = "forced"
         return 0, payload
-    if not rule or (rule["enforce"] == "opt-in" and not (args.opt_in or os.getenv("OFFPEAK_OPT_IN") == "1")):
+    if not rule or (rule["enforce"] == "opt-in" and not opted_in(args)):
         if rule and rule["enforce"] == "opt-in":
             payload["reason"] = "opt-in rule; gating disabled"
         return 0, payload
     if payload["is_peak"]:
+        payload["deferred"] = True
         return 3, payload
     estimate = args.estimate_minutes
     if estimate:
         _, end = interval(at, rule)
         if (end - at).total_seconds() < estimate * 60:
-            payload["is_peak"] = True
+            payload["deferred"] = True
             payload["reason"] = "insufficient off-peak time for estimate"
             start = next_transition(end, rule, False)
             payload.update(next_offpeak_start_local=fmt(start, zone), next_offpeak_start_utc=start.isoformat().replace("+00:00", "Z"), seconds_until_offpeak=int((start-at).total_seconds()))
@@ -224,14 +231,15 @@ def state_path(args: argparse.Namespace) -> Path:
 
 def due_items(path: Path, rules: list[dict[str, Any]], now: datetime, zone: timezone | ZoneInfo) -> list[dict[str, Any]]:
     rows = read_state(path)
-    done = {row["unit_id"] for row in rows if row.get("event") == "done"}
     latest: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        if "defer_until_utc" in row:
+    for row in rows:  # file order: a later "done" closes a defer; a later defer reopens the unit
+        if row.get("event") == "done":
+            latest.pop(row["unit_id"], None)
+        elif "defer_until_utc" in row:
             latest[row["unit_id"]] = row
     due = []
     for unit, row in latest.items():
-        if unit in done or parse_now(row["defer_until_utc"]) > now:
+        if parse_now(row["defer_until_utc"]) > now:
             continue
         rule = find_rule(row["target"], rules)
         if not rule or is_peak(now, rule):
@@ -246,7 +254,7 @@ def handler(args: argparse.Namespace, rules: list[dict[str, Any]], sleep_fn: Cal
     zone = get_zone(getattr(args, "tz", "America/Phoenix"))
     if args.command == "status":
         rule = find_rule(args.target, rules)
-        payload = status_payload(args.target, at, zone, rule)
+        payload = status_payload(args.target, at, zone, rule, opted_in(args))
         print(json.dumps(payload, indent=2) if args.json else json.dumps(payload))
         return 0
     if args.command == "gate":
@@ -261,7 +269,9 @@ def handler(args: argparse.Namespace, rules: list[dict[str, Any]], sleep_fn: Cal
         return 0
     if args.command == "defer":
         plan = json.loads(Path(args.plan).read_text())
-        unit = next(unit for unit in plan["units"] if unit["id"] == args.unit)
+        unit = next((unit for unit in plan.get("units", []) if unit.get("id") == args.unit), None)
+        if unit is None:
+            raise InputError(f"unit {args.unit!r} not found in plan")
         target_value = unit.get("target")
         if isinstance(target_value, dict):
             target_value = f"{target_value['providerInstanceId']}:{target_value['model']}"
@@ -307,7 +317,10 @@ def handler(args: argparse.Namespace, rules: list[dict[str, Any]], sleep_fn: Cal
         elif args.host == "claude-code":
             print(f"One-shot CronCreate or /schedule at {fmt(start, zone)} ({start.isoformat().replace('+00:00','Z')}): {prompt}")
         else:
-            print(f"{start.minute} {start.hour} {start.day} {start.month} * python3 offpeak.py due  # {prompt}; local {fmt(start, zone)}; UTC {start.isoformat().replace('+00:00','Z')}")
+            local = start.astimezone(zone)
+            script = Path(__file__).resolve()
+            print(f"# cron uses the host's local time zone; these fields are {args.tz}. Remove the line after it runs.")
+            print(f"{local.minute} {local.hour} {local.day} {local.month} * python3 {script} due  # {prompt}; local {fmt(start, zone)}; UTC {start.isoformat().replace('+00:00','Z')}")
         return 0
     raise InputError("unknown command")
 
@@ -326,6 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--estimate-minutes", type=int, default=0)
     gate.add_argument("--opt-in", action="store_true")
     gate.add_argument("--force", action="store_true")
+    sub.choices["status"].add_argument("--opt-in", action="store_true")
     sub.choices["next"].add_argument("--count", type=int, default=5)
     sub.choices["wait"].add_argument("--max-wait-hours", type=float, default=24)
     sub.choices["schedule-hint"].add_argument("--host", choices=["t3", "claude-code", "cron"], default="t3")
