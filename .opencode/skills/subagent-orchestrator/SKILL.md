@@ -298,7 +298,7 @@ Do not accept "done" as done.
 5. **Recheck with a new delegate.** After fixes land (from a delegated fix unit when the parent may not write), launch a fresh `delegate_task` whose brief includes the prior findings, the fix commits/diff, and the original acceptance criteria. Do not send the recheck to the finished reviewer thread.
 6. **Link the PR in the parent** with `link_pull_request` (or `link_pull_requests` for several) as soon as it exists or after a takeover/push. The parent owns the PR relationship. A child never watches a PR.
 7. **Watch only when asked or when the remaining work is waiting on checks/reviews.** Then call `watch_pull_request` and end the turn.
-8. **Record the outcome** with `scripts/outcome_ledger.py record` when actual usage, duration, or verification status is known. Mark whether the parent verified the result; do not record a child's self-report as verified. The ledger is local metadata, so appending it does not violate a no-parent-write constraint.
+8. **Record the outcome** with `scripts/outcome_ledger.py record` (or `scripts/record_verification.py` from a reviewed `verify_unit.py` report) when actual usage, duration, or verification status is known. Record the routing decision itself at launch time with `scripts/decision_journal.py record --from-select`. Mark whether the parent verified the result; do not record a child's self-report as verified. The ledger is local metadata, so appending it does not violate a no-parent-write constraint.
 9. **Report** the target used, units completed, tests run, PR links, and any unresolved risks.
 10. **Update the usage snapshot** if the user maintains one and actual usage is available. If the provider does not report it, mark the snapshot stale.
 
@@ -380,6 +380,8 @@ python3 scripts/select_target.py --capabilities caps.json \
 - [`references/briefs.md`](references/briefs.md) — role templates and examples.
 - [`references/operations.md`](references/operations.md) — isolation, lifecycle, supervision, integration.
 - [`references/outcomes.md`](references/outcomes.md) — outcome-ledger schema and evidence rules.
+- [`references/decisions.md`](references/decisions.md) — decision-journal schema (why a target won, rejected alternatives).
+- [`references/multi-repo.md`](references/multi-repo.md) — multi-repo plans, per-repo units, PR stacks.
 - [`assets/brief-template.md`](assets/brief-template.md) — copy-paste brief.
 - [`assets/plan.schema.json`](assets/plan.schema.json) — delegation plan contract.
 - [`data/routing-policy.json`](data/routing-policy.json) — cost/reasoning tiers and budget estimates.
@@ -387,3 +389,4 @@ python3 scripts/select_target.py --capabilities caps.json \
 - [`scripts/select_target.py`](scripts/select_target.py) — deterministic route-only selector with exact pins.
 - [`scripts/validate_plan.py`](scripts/validate_plan.py) — plan validator.
 - [`scripts/outcome_ledger.py`](scripts/outcome_ledger.py) — append-only outcome records and summaries.
+- [`scripts/decision_journal.py`](scripts/decision_journal.py) — append-only routing decisions; `join` links them to ledger outcomes.
