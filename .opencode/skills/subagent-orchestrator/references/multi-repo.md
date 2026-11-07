@@ -1,0 +1,7 @@
+# Multi-repository plans
+
+Define each checkout in the top-level `repos` map. Each map key names a repository, and its value declares a canonical `remote` plus optional `base_branch`, `integration_branch`, and `local_path`. Give every implementation unit with a non-empty `write_scope` exactly one matching `repo` key. Write scopes are relative to that repository, so identical paths in different repositories do not overlap; shared writers in the same repository still must not overlap. See [`assets/plan.multi-repo.example.json`](../assets/plan.multi-repo.example.json).
+
+Use a repository's `integration_branch` for a shared integration branch when needed. `integration.stack` is an ordered list of `{repo, units, pr_base}` entries. Each unit must appear at most once and in the entry for its declared repository. Put dependencies before consumers, including across repositories. `pr_base` must name that repository's configured base or integration branch, or a branch produced by an earlier unit in that repository (represented by its unit id). The parent owns integration and PR coordination. A child brief or deliverable must never ask the child to watch or babysit a PR; the validator rejects this in multi-repository plans.
+
+`scripts/verify_unit.py` can verify a unit's checkout with `--repo`; for repo-assigned units it checks that `origin` points to the declared remote, accepting GitHub SSH and HTTPS spellings as equivalent.
