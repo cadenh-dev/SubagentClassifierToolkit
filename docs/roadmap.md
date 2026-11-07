@@ -1,6 +1,6 @@
 # Toolkit roadmap
 
-Useful additions beyond the current skills, ordered by leverage. Items marked **implemented** are in this repository.
+Useful additions beyond the current skills, ordered by leverage. All items below are implemented in this repository.
 
 ## Implemented
 
@@ -50,78 +50,29 @@ Deterministic, read-only checks for Agent Skills:
 ### 7. Verification harness
 `scripts/verify_unit.py` runs one unit's declared commands with a bounded timeout and bounded stdout/stderr capture, then compares the committed `base..HEAD` diff against the unit's declared write scope. It reports command failures, timeouts, out-of-scope paths, invalid scopes, and path errors as JSON with an explicit verdict scope and limitations. Commands require `--allow-commands`; shell syntax requires a separate `--shell` opt-in. The harness never treats passing commands as proof of prose acceptance criteria and does not append to the ledger automatically. After parent review, `scripts/record_verification.py` transfers plan metadata to the ledger while requiring the caller to supply depth, outcome, verification level, retries, and review-findings count.
 
-## Next
-
 ### 8. Capability registry / doctor
-One command that reports:
-
-- languages and runtime versions
-- installed build tools
-- authenticated providers/models
-- MCP servers and CLIs
-- missing commands the project expects
-
-The project classifier's profile is a good starting point; this adds versions and health checks.
+`toolkit-doctor` reports runtimes and versions, agent CLIs, `gh` auth, git remote reachability (with an HTTPS hint when SSH fails but `gh` is authenticated), ahead/behind vs upstream, MCP server names (never values), missing commands a project profile expects, and installed-skill drift.
 
 ### 9. Repo guardrail generator
-Generate or update `AGENTS.md` from the project profile:
-
-- build/test/lint commands
-- package manager
-- architecture boundaries
-- files not to edit
-- review expectations
-
-Pairs naturally with the project classifier.
+`repo-guardrails` writes a marked `AGENTS.md` section from a project-classifier profile plus overrides (do-not-edit paths, boundaries, review expectations). Content outside the markers is preserved byte-for-byte; `--check` reports drift without writing.
 
 ### 10. Worktree / PR janitor
-Find stale worktrees, orphan branches, unlinked PRs, and abandoned delegated tasks. Offer cleanup only after confirmation; never delete unmerged work silently.
+`worktree-janitor scan` is read-only and lists stale worktrees, merged or orphaned branches, and stale PRs with stable ids. `clean --apply --id …` re-checks each item and refuses dirty, unmerged, locked, current, or main worktrees; it never force-removes, never uses `branch -D`, and never touches remote branches or PRs.
 
 ### 11. Benchmark runner
-Run the same task on multiple providers/models with a fixed brief, then compare:
-
-- test pass rate
-- review findings
-- duration
-- usage
-- diff size
-
-The output feeds the routing policy.
+`benchmark-runner` generates a validated plan with one isolated unit per target, scores each with `verify_unit.py`, compares pass rate, scope, diff size, duration, usage, and review findings, and records only human-reviewed units to the ledger. It never edits the routing policy.
 
 ### 12. Decision journal
-Append-only record of:
-
-- task classification
-- selected target and why
-- alternatives rejected
-- budget snapshot
-- outcome
-
-Useful for debugging "why did it pick Cursor for that?" and for auditing cost. The outcome ledger covers the result; a decision journal would also capture the rejected alternatives.
+`scripts/decision_journal.py` appends the classification, selected target, rejected alternatives with reasons (ranking or budget), budget snapshot, and constraints; `join` links decisions to ledger outcomes. `select_target.py --json` now emits `rejected_candidates`.
 
 ### 13. Secret-safe bootstrap
-A preflight that checks required credentials through `request_secret` and never writes values to the repo or logs.
+`secret-preflight` checks a credential manifest (env presence, file existence and permissions without reading, opt-in `--allow-commands` checks) and scans tracked files for secrets, reporting location and pattern only. Missing secrets are requested through the host's `request_secret`, never pasted in chat.
 
 ### 14. Compatibility matrix
-Provider/model/option matrix with known constraints:
-
-- tool calling
-- image input
-- context limits
-- max output
-- streaming
-- structured output
-- rate-limit behavior
-
-Read from live capabilities where possible; keep only stable constraints locally.
+`compat-matrix` joins live `orchestrator_capabilities` output with sourced local constraints (context, output, tools, images, structured output, streaming), filters eligible targets, treats `unknown` as not satisfying a requirement, and lists unverified or stale entries.
 
 ### 15. Multi-repo orchestrator
-For work that spans repositories:
-
-- one unit per repo/worktree
-- cross-repo dependency tracking
-- integration branch and PR stack
-- no child-owned PR watches
+Plans accept a `repos` map, a per-unit `repo`, and an `integration.stack`. The validator checks per-repo scope overlap, cross-repo cycles, stack order and PR bases, and forbids child-owned PR watches; `verify_unit.py` checks the worktree's origin matches the unit's repo.
 
 ## Not worth building yet
 
