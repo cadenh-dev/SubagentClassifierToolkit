@@ -89,15 +89,68 @@ class DoctorTests(unittest.TestCase):
             remote = next(x for x in result if x["id"] == "git.remote.origin")
             self.assertEqual(remote["status"], "error"); self.assertIn("Permission denied", remote["details"]["reason"]); self.assertIn("suggestion", remote["details"])
 
+    def fake_runner(self, auth_ok):
+        def runner(args, **kwargs):
+            if args[1:3] == ["auth", "status"]:
+                return SimpleNamespace(returncode=0 if auth_ok else 1, stdout="", stderr="")
+            if args[1:] == ["remote"]:
+                return SimpleNamespace(returncode=0, stdout="origin\n", stderr="")
+            if "get-url" in args:
+                return SimpleNamespace(returncode=0, stdout="git@github.com:org/repo.git\n", stderr="")
+            if "ls-remote" in args:
+                return SimpleNamespace(returncode=1, stdout="", stderr="git@github.com: Permission denied (publickey).")
+            if "rev-list" in args:
+                return SimpleNamespace(returncode=1, stdout="", stderr="no upstream")
+            raise AssertionError(args)
+        return runner
+
     def test_remote_no_suggestion_when_unauthenticated(self):
-        self.assertNotIn("suggestion", {"reason": "failure"})
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t)
+            result = d.doctor(repo, repo / "i", None, repo, "", .1, runner=self.fake_runner(False),
+                              which=lambda c, **k: "/fake" if c in ("git", "gh") else None)
+            remote = next(x for x in result if x["id"] == "git.remote.origin")
+            self.assertEqual(remote["status"], "error")
+            self.assertNotIn("suggestion", remote["details"])
 
-    def test_secret_scanner_and_jsonc(self):
-        for raw in ('{"env":{"TOKEN":"SENTINEL_A"}}', '{"headers":{"Authorization":"SENTINEL_B"}}', '{"url":"https://u:SENTINEL_C@example.test"}'):
-            parsed = json.loads(d.strip_jsonc_comments(raw))
-            self.assertTrue(parsed)
-            self.assertNotIn("SENTINEL", json.dumps(d.report("x", "ok", "", {"names": ["safe"]})))
+    def write_secret_home(self, home):
+        sentinels = ["SENTINEL_ENV_A1", "SENTINEL_HDR_B2", "SENTINEL_URL_C3", "SENTINEL_TOML_D4", "SENTINEL_GEM_E5"]
+        files = {
+            ".config/opencode/opencode.jsonc": '{\n // comment\n "mcp": {"oc-server": {"environment": {"TOKEN": "SENTINEL_ENV_A1"},'
+                                               ' "url": "https://user:SENTINEL_URL_C3@example.test/mcp"}}}',
+            ".claude.json": '{"mcpServers": {"claude-server": {"headers": {"Authorization": "Bearer SENTINEL_HDR_B2"}}}}',
+            ".codex/config.toml": '[mcp_servers.codex-server]\ncommand = "x"\nenv = { API_KEY = "SENTINEL_TOML_D4" }\n',
+            ".gemini/settings.json": '{"mcpServers": {"gemini-server": {"env": {"KEY": "SENTINEL_GEM_E5"}}}}',
+        }
+        for rel, text in files.items():
+            target = home / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        return sentinels
 
+    def test_secrets_never_in_doctor_output(self):
+        with tempfile.TemporaryDirectory() as t:
+            home = Path(t)
+            sentinels = self.write_secret_home(home)
+            result = d.doctor(home, home / "i", None, home, "", .1, which=lambda *a, **k: None)
+            dumped = json.dumps(result)
+            self.assertIn("claude-server", dumped)
+            self.assertIn("oc-server", dumped)
+            for sentinel in sentinels:
+                self.assertNotIn(sentinel, dumped)
+
+    def test_secrets_never_in_cli_json(self):
+        with tempfile.TemporaryDirectory() as t:
+            home = Path(t)
+            sentinels = self.write_secret_home(home)
+            env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
+            proc = subprocess.run(["python3", str(ROOT / ".opencode/skills/toolkit-doctor/scripts/doctor.py"),
+                                   "--repo", str(home), "--json", "--timeout", "2"],
+                                  capture_output=True, text=True, env=env)
+            self.assertIn(proc.returncode, (0, 1), proc.stderr)
+            self.assertIn("gemini-server", proc.stdout)
+            for sentinel in sentinels:
+                self.assertNotIn(sentinel, proc.stdout + proc.stderr)
 
 if __name__ == "__main__":
     unittest.main()
