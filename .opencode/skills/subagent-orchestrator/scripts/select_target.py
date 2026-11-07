@@ -909,6 +909,20 @@ def main() -> int:
         "budget": budget,
         "remaining_units": chosen.get("remaining"),
         "remaining_source": chosen.get("remaining_source"),
+        "rejected_candidates": [
+            {
+                "target": {
+                    "providerInstanceId": candidate["provider"],
+                    "model": candidate["model"],
+                    "options": candidate["options"],
+                },
+                "rejected_because": "ranked below the selected target by routing policy",
+            }
+            for candidate in sorted(
+                (item for item in candidates if item is not chosen),
+                key=lambda item: (-item["score"], item["cost"], item["key"]),
+            )
+        ],
     }
     if args.json:
         print(json.dumps(result, indent=2))
