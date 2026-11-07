@@ -119,7 +119,15 @@ class KickoffTests(unittest.TestCase):
 
     def test_brief_reflects_overrides(self):
         self.set_role("planner", "--set", "policies.ignore_cost=true")
-        self.assertIn("ignore_cost=True", self.run_cli("brief", "--repo", self.repo).stdout)
+        self.assertIn("ignore_cost=true", self.run_cli("brief", "--repo", self.repo).stdout)
+
+    def test_brief_includes_every_policy_and_short_announcement(self):
+        text = self.run_cli("brief", "--repo", self.repo).stdout
+        self.assertIn('on_provider_limit="wait-and-reschedule"', text)
+        self.assertIn("do not switch providers unasked", text)
+        announcement = next(line for line in text.splitlines() if line.startswith("Announcement:"))
+        self.assertIn("built-in default", announcement)
+        self.assertLess(len(announcement), 160)
 
     def test_onboard_done_and_undone(self):
         (self.repo / "AGENTS.md").write_text("<!-- toolkit:guardrails:begin -->ok<!-- toolkit:guardrails:end -->")
