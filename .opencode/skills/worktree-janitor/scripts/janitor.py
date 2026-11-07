@@ -47,6 +47,8 @@ def git_ok(repo: Path, *args: str) -> bool:
 def finding(kind: str, identity: str, reasons: list[str], safe: bool,
             action: str, **fields: Any) -> dict[str, Any]:
     prefix = {"worktree": "wt", "branch": "br", "pr": "pr", "skip": "skip"}[kind]
+    if kind in ("worktree", "branch") and not safe:
+        action = "review manually; not safe to remove automatically"
     return {"id": f"{prefix}:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}", "kind": kind, **fields,
             "reasons": sorted(set(reasons)), "safe_to_remove": safe,
             "suggested_action": action}
@@ -134,6 +136,8 @@ def scan(repo_arg: Path, base_arg: str | None, stale_days: int,
 
     for entry in worktrees:
         path: Path = entry["path"]
+        if path.resolve() == main_path:
+            continue  # The main worktree is never a cleanup candidate.
         reasons: list[str] = []
         exists = path.is_dir()
         if not exists:

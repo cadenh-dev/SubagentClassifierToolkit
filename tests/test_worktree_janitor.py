@@ -70,10 +70,22 @@ class JanitorTests(unittest.TestCase):
         self.scan()
         self.assertEqual(snapshot(), before)
 
-    def test_scan_never_marks_main_worktree_safe(self) -> None:
+    def test_scan_never_lists_main_worktree(self) -> None:
         (self.repo / "file").write_text("dirty\n", encoding="utf-8")
-        item = next(item for item in self.scan() if item["kind"] == "worktree")
-        self.assertFalse(item["safe_to_remove"])
+        main = str(self.repo.resolve())
+        self.assertFalse([item for item in self.scan()
+                          if item["kind"] == "worktree" and str(Path(item["path"]).resolve()) == main])
+
+    def test_unsafe_items_do_not_suggest_removal(self) -> None:
+        path = self.worktree("unmerged", branch="unmerged-wt")
+        self.commit(path)
+        unsafe = [item for item in self.scan()
+                  if item["kind"] in ("worktree", "branch") and not item["safe_to_remove"]]
+        self.assertTrue(unsafe)
+        for item in unsafe:
+            if item["kind"] in ("worktree", "branch") and not item["safe_to_remove"]:
+                self.assertNotIn("remove", item["suggested_action"].split("; ")[0])
+                self.assertNotIn("branch -d", item["suggested_action"])
 
     def test_detects_merged_clean_worktree(self) -> None:
         path = self.worktree("merged", branch="merged-wt")
