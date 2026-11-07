@@ -35,28 +35,36 @@ def load_manifest(path: Path) -> list[dict]:
     if not isinstance(entries, list):
         raise InputError("manifest must contain a secrets array")
     names: set[str] = set()
-    for entry in entries:
-        if (not isinstance(entry, dict) or not isinstance(entry.get("name"), str)
-                or not entry["name"] or entry["name"] in names
-                or not isinstance(entry.get("purpose"), str)
-                or not isinstance(entry.get("required"), bool)
-                or not isinstance(entry.get("used_by"), list)
-                or not isinstance(entry.get("sources"), list)):
-            raise InputError("invalid secret entry")
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise InputError(f"manifest entry {index}: expected object")
+        for field, valid in (("name", lambda v: isinstance(v, str) and bool(v)),
+                             ("purpose", lambda v: isinstance(v, str)),
+                             ("required", lambda v: isinstance(v, bool)),
+                             ("used_by", lambda v: isinstance(v, list)),
+                             ("sources", lambda v: isinstance(v, list))):
+            if field not in entry or not valid(entry[field]):
+                raise InputError(f"manifest entry {index}: invalid {field} field")
+        if entry["name"] in names:
+            raise InputError(f"manifest entry {index}: duplicate name field")
         names.add(entry["name"])
-        for source in entry["sources"]:
-            if not isinstance(source, dict) or source.get("type") not in ("env", "file", "command"):
-                raise InputError("invalid source")
-            if source["type"] == "env" and not isinstance(source.get("var"), str):
-                raise InputError("invalid env source")
-            if source["type"] == "file" and not isinstance(source.get("path"), str):
-                raise InputError("invalid file source")
-            if source["type"] == "command" and (not isinstance(source.get("check"), list) or not source["check"] or not all(isinstance(x, str) for x in source["check"])):
-                raise InputError("invalid command source")
+        for source_index, source in enumerate(entry["sources"]):
+            prefix = f"manifest entry {index} source {source_index}"
+            if not isinstance(source, dict):
+                raise InputError(f"{prefix}: expected object")
+            kind = source.get("type")
+            if kind not in ("env", "file", "command"):
+                raise InputError(f"{prefix}: invalid type field")
+            field = {"env": "var", "file": "path", "command": "check"}[kind]
+            value = source.get(field)
+            valid = (isinstance(value, str) if kind in ("env", "file") else
+                     isinstance(value, list) and bool(value) and all(isinstance(x, str) for x in value))
+            if not valid:
+                raise InputError(f"{prefix}: invalid {field} field")
     return entries
 
 
-def check(entries: list[dict], manifest_dir: Path, timeout: float) -> tuple[list[dict], bool]:
+def check(entries: list[dict], manifest_dir: Path, timeout: float, allow_commands: bool = False) -> tuple[list[dict], bool]:
     report, missing = [], False
     for item in entries:
         sources = []
@@ -80,8 +88,14 @@ def check(entries: list[dict], manifest_dir: Path, timeout: float) -> tuple[list
                         if stat.S_ISREG(info.st_mode) and info.st_mode & 0o077:
                             result["warning"] = "group/world readable"
                 else:
+                    if not allow_commands:
+                        result.update(status="skipped", reason="commands not allowed")
+                        sources.append(result)
+                        continue
                     try:
-                        proc = subprocess.run(source["check"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout, check=False)
+                        command_env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
+                        proc = subprocess.run(source["check"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                              stdin=subprocess.DEVNULL, env=command_env, timeout=timeout, check=False)
                         result.update(status="present" if proc.returncode == 0 else "missing", exit_status=proc.returncode)
                     except (OSError, subprocess.TimeoutExpired):
                         result["status"] = "unknown"
@@ -100,17 +114,21 @@ def scan(entries: list[dict], root: Path) -> list[dict]:
     findings = []
     env_names = {s["var"] for e in entries for s in e["sources"] if s["type"] == "env"}
     files = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout.split(b"\0")
-    ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", ".env"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    exceptions = {".env.example", ".env.sample", ".env.template", ".env.dist"}
     for raw in files:
         if not raw:
             continue
         rel = os.fsdecode(raw)
-        if Path(rel).name.startswith(".env") and not ignored:
+        filename = Path(rel).name
+        if (filename == ".env" or filename.startswith(".env.")) and filename not in exceptions:
             findings.append({"file": rel, "line": 1, "pattern": "tracked env file not ignored"})
         path = root / rel
         try:
             if not path.is_file() or path.stat().st_size > 2_000_000:
                 continue
+            with path.open("rb") as handle:
+                if b"\0" in handle.read(8192):
+                    continue
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
@@ -119,9 +137,22 @@ def scan(entries: list[dict], root: Path) -> list[dict]:
                 if pattern.search(line):
                     findings.append({"file": rel, "line": number, "pattern": label})
             for name in env_names:
-                if re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"\s*=\s*[^\s#]", line):
+                match = re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"\s*=\s*([^#]+)", line)
+                if match and _looks_like_literal(match.group(1)):
                     findings.append({"file": rel, "line": number, "pattern": "manifest env var assigned literal"})
     return findings
+
+
+def _looks_like_literal(value: str) -> bool:
+    value = value.strip().rstrip(";,}").strip()
+    if not value or value in ('""', "''"):
+        return False
+    lowered = value.lower()
+    if lowered.startswith(("$", "${", "os.", "process.env", "env(", "getenv", "<")):
+        return False
+    if re.search(r"changeme|your-|xxx|<[^>]*>", lowered):
+        return False
+    return True
 
 
 def main() -> int:
@@ -130,6 +161,8 @@ def main() -> int:
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--allow-commands", action="store_true",
+                        help="Run manifest command checks. Only use with a trusted manifest.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     try:
@@ -137,7 +170,7 @@ def main() -> int:
             raise InputError("timeout must be between 0 and 60 seconds")
         entries = load_manifest(args.manifest)
         if args.mode == "check":
-            records, missing = check(entries, args.manifest.resolve().parent, args.timeout)
+            records, missing = check(entries, args.manifest.resolve().parent, args.timeout, args.allow_commands)
             findings = []
         else:
             records, missing = [], False
