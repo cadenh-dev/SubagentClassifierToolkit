@@ -30,9 +30,11 @@ class SecretPreflightTests(unittest.TestCase):
             secret_file.write_text(fake)
             manifest = self.manifest(root, [{"type": "env", "var": "PREFLIGHT_TEST"}, {"type": "file", "path": str(secret_file)}, {"type": "command", "check": ["python3", "-c", f"import sys; print('{fake}'); sys.exit(1)"]}])
             env = dict(os.environ, PREFLIGHT_TEST=fake)
-            result = self.cli("check", "--manifest", manifest, "--json", env=env)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertNotIn(fake, result.stdout + result.stderr)
+            for extra in ((), ("--allow-commands",)):
+                result = self.cli("check", "--manifest", manifest, "--json", *extra, env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn(fake, result.stdout + result.stderr)
+            self.assertIn('"exit_status": 1', result.stdout)  # the command really ran
 
     def test_file_source_never_opened(self):
         with tempfile.TemporaryDirectory() as tmp:
