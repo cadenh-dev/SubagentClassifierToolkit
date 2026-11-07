@@ -28,6 +28,23 @@ class GuardrailsTests(unittest.TestCase):
         for content in ("<!-- toolkit:guardrails:end -->\n<!-- toolkit:guardrails:begin -->", "<!-- toolkit:guardrails:begin -->", "<!-- toolkit:guardrails:begin --><!-- toolkit:guardrails:begin --><!-- toolkit:guardrails:end -->"):
             (self.root / "AGENTS.md").write_text(content)
             self.assertEqual(self.run_cli().returncode, 1)
+    def test_bad_input_exit_2(self):
+        self.profile.write_text("{not json")
+        self.assertEqual(self.run_cli("--stdout").returncode, 2)
+        self.profile.write_text(json.dumps({"schema_version": 99}))
+        self.assertEqual(self.run_cli("--stdout").returncode, 2)
+    def test_new_file_ends_with_newline_and_is_stable(self):
+        self.assertEqual(self.run_cli().returncode, 0)
+        path = self.root / "AGENTS.md"; first = path.read_bytes()
+        self.assertTrue(first.endswith(b"-->\n"))
+        self.assertEqual(self.run_cli().returncode, 0); self.assertEqual(path.read_bytes(), first)
+    def test_polyglot_path_routes(self):
+        data = json.loads(self.profile.read_text()); data["ambiguous"] = True
+        data["languages"] = [{"name": "python", "manifests": ["api/pyproject.toml"], "examples": ["api/app/main.py"]},
+                             {"name": "java", "manifests": ["worker/pom.xml"], "examples": []}]
+        self.profile.write_text(json.dumps(data))
+        out = self.run_cli("--stdout").stdout.decode()
+        self.assertIn("`api/` → python", out); self.assertIn("`worker/` → java", out)
     def test_stdout(self): self.assertIn(b"<!-- toolkit:guardrails:begin -->", self.run_cli("--stdout").stdout)
 
 if __name__ == "__main__": unittest.main()
