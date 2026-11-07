@@ -6,3 +6,4 @@ venv/
 .opencode/skills/subagent-orchestrator/data/usage.json
 .opencode/skills/subagent-orchestrator/data/outcomes.jsonl
 .opencode/skills/subagent-orchestrator/data/decisions.jsonl
+.opencode/skills/offpeak-scheduler/data/deferred.jsonl

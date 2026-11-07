@@ -2,7 +2,7 @@
 
 A T3 Code toolkit for deciding **when** to use subagents, **which** provider/model to use, **how** to deploy and supervise them, and **which project tools/languages** they should use.
 
-Nine skills ship in the box:
+Ten skills ship in the box:
 
 - [`subagent-orchestrator`](.opencode/skills/subagent-orchestrator/) — routing, briefs, supervision, verification, multi-repo plans, a decision journal, and an outcome ledger.
 - [`project-classifier`](.opencode/skills/project-classifier/) — generates a project-local tool router from repository evidence.
@@ -13,6 +13,7 @@ Nine skills ship in the box:
 - [`benchmark-runner`](.opencode/skills/benchmark-runner/) — runs one fixed brief on several targets and compares verified, human-reviewed results.
 - [`secret-preflight`](.opencode/skills/secret-preflight/) — checks required credentials are available without reading values; scans tracked files for leaked secrets.
 - [`compat-matrix`](.opencode/skills/compat-matrix/) — joins live provider capabilities with sourced model constraints and filters eligible targets.
+- [`offpeak-scheduler`](.opencode/skills/offpeak-scheduler/) — runs DeepSeek work only in DeepSeek's off-peak (discounted) hours and defers it otherwise, with no polling.
 
 The main skill is [`.opencode/skills/subagent-orchestrator/`](.opencode/skills/subagent-orchestrator/). It is not just a prompt that prints a model name. It is an operating procedure for:
 
@@ -226,6 +227,16 @@ The benchmark runner is a plan generator and scorer; the parent agent launches e
 
 Multi-repo delegation plans add a top-level `repos` map, a per-unit `repo`, and an optional `integration.stack`. See [`references/multi-repo.md`](.opencode/skills/subagent-orchestrator/references/multi-repo.md).
 
+DeepSeek off-peak gating (times shown for America/Phoenix):
+
+```bash
+python3 .opencode/skills/offpeak-scheduler/scripts/offpeak.py gate --target deepseek:deepseek-v4.1-flash
+# exit 0 = run now, 3 = defer; then print a one-time wake instruction for the host:
+python3 .opencode/skills/offpeak-scheduler/scripts/offpeak.py schedule-hint --target deepseek:deepseek-v4.1-flash --host t3
+```
+
+The discount applies to DeepSeek's direct API (and OpenRouter's DeepSeek route). OpenCode Go and Zen have no time-of-day pricing, so their rules are opt-in (`--opt-in` or `OFFPEAK_OPT_IN=1`). Window data is unverified research; see the skill's `references/windows.md`.
+
 The compatibility matrix's local data (`data/constraints.json`) is web research marked `verified: false`; live capabilities always win. Run `compat_matrix.py stale` to list entries that need a human re-check.
 
 ## What is in the box
@@ -357,4 +368,4 @@ See [`docs/requirements.md`](docs/requirements.md) for the requirement-to-implem
 
 ## Status
 
-Nine skills: subagent orchestration (with decision journal, verification harness, and multi-repo plans), project toolchain classification, a read-only skill linter, and operations skills for health checks, guardrails, worktree cleanup, benchmarking, secret preflight, and model compatibility. All roadmap items 1–15 are implemented. The routing policy is a starter heuristic, not a benchmark. Adjust `data/routing-policy.json` to match your own quality and cost measurements, using the outcome ledger and benchmark runner as evidence. The project classifier is conservative by design; low-confidence evidence is reported, not hidden.
+Ten skills: subagent orchestration (with decision journal, verification harness, and multi-repo plans), project toolchain classification, a read-only skill linter, and operations skills for health checks, guardrails, worktree cleanup, benchmarking, secret preflight, model compatibility, and DeepSeek off-peak scheduling. All roadmap items 1–15 are implemented. The routing policy is a starter heuristic, not a benchmark. Adjust `data/routing-policy.json` to match your own quality and cost measurements, using the outcome ledger and benchmark runner as evidence. The project classifier is conservative by design; low-confidence evidence is reported, not hidden.
