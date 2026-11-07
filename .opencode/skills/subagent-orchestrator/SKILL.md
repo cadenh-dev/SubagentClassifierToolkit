@@ -239,6 +239,8 @@ Do not put secrets in a brief. If a child needs a secret, stop and ask the paren
 
 ## Phase 5 — Launch
 
+Before launching a unit whose target matches an off-peak rule, run offpeak-scheduler `gate`.
+
 Choose the mechanism in this order:
 
 1. **Native child tool** only when all are true: the child runs on the parent's provider; that provider exposes a native child mechanism; the child needs no target, model, or option override; and the work finishes in this turn. Do not infer a tool from `features.appOwnedSubagents`; it describes app support, not a callable tool.
@@ -382,6 +384,7 @@ python3 scripts/select_target.py --capabilities caps.json \
 - [`references/outcomes.md`](references/outcomes.md) — outcome-ledger schema and evidence rules.
 - [`references/decisions.md`](references/decisions.md) — decision-journal schema (why a target won, rejected alternatives).
 - [`references/multi-repo.md`](references/multi-repo.md) — multi-repo plans, per-repo units, PR stacks.
+- `offpeak-scheduler` — gate DeepSeek work and resume deferred child units at the next off-peak window.
 - [`assets/brief-template.md`](assets/brief-template.md) — copy-paste brief.
 - [`assets/plan.schema.json`](assets/plan.schema.json) — delegation plan contract.
 - [`data/routing-policy.json`](data/routing-policy.json) — cost/reasoning tiers and budget estimates.

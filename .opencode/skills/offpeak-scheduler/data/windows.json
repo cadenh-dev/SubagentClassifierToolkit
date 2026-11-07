@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "deepseek-direct",
+      "match": {
+        "model_patterns": [
+          "deepseek*",
+          "*/deepseek*",
+          "deepseek/*"
+        ],
+        "providerInstanceId": [
+          "deepseek",
+          "openrouter"
+        ]
+      },
+      "enforce": "default",
+      "peak_windows_utc": [
+        {
+          "start": "01:00",
+          "end": "04:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ]
+        },
+        {
+          "start": "06:00",
+          "end": "10:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ]
+        }
+      ],
+      "holidays": {
+        "timezone": "Asia/Shanghai",
+        "dates": []
+      },
+      "discount": "50% off-peak",
+      "sources": [
+        "https://api-docs.deepseek.com/quick_start/pricing",
+        "https://api-docs.deepseek.com/changelog"
+      ],
+      "retrieved": "2026-11-07",
+      "verified": false,
+      "notes": "Unverified research. Chinese statutory holidays are off-peak all day by Asia/Shanghai date; add known dates."
+    },
+    {
+      "id": "deepseek-opencode-go",
+      "match": {
+        "providerInstanceId": [
+          "opencode"
+        ],
+        "model_patterns": [
+          "opencode-go/deepseek*"
+        ]
+      },
+      "enforce": "opt-in",
+      "peak_windows_utc": [
+        {
+          "start": "01:00",
+          "end": "04:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ]
+        },
+        {
+          "start": "06:00",
+          "end": "10:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ]
+        }
+      ],
+      "holidays": {
+        "timezone": "Asia/Shanghai",
+        "dates": []
+      },
+      "discount": "none",
+      "sources": [
+        "https://opencode.ai/docs/go",
+        "https://api-docs.deepseek.com/quick_start/pricing"
+      ],
+      "retrieved": "2026-11-07",
+      "verified": false,
+      "notes": "OpenCode Go has no time-of-day pricing; waiting saves nothing unless you want to shift load."
+    },
+    {
+      "id": "deepseek-opencode-zen-free",
+      "match": {
+        "providerInstanceId": [
+          "opencode"
+        ],
+        "model_patterns": [
+          "opencode/deepseek*-free"
+        ]
+      },
+      "enforce": "opt-in",
+      "peak_windows_utc": [
+        {
+          "start": "01:00",
+          "end": "04:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ]
+        },
+        {
+          "start": "06:00",
+          "end": "10:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ]
+        }
+      ],
+      "holidays": {
+        "timezone": "Asia/Shanghai",
+        "dates": []
+      },
+      "discount": "none",
+      "sources": [
+        "https://opencode.ai/docs/models",
+        "https://api-docs.deepseek.com/quick_start/pricing"
+      ],
+      "retrieved": "2026-11-07",
+      "verified": false,
+      "notes": "OpenCode Zen has no time-of-day pricing; waiting saves nothing unless you want to shift load."
+    }
+  ]
+}
