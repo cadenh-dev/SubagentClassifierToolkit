@@ -63,6 +63,26 @@ class DecisionJournalTests(unittest.TestCase):
             self.assertTrue(any(alt["rejected_because"].strip() for alt in row["alternatives"]))
             self.assertEqual(json.loads(journal.read_text())["selected"], selection["target"])
 
+    def test_selector_reports_budget_rejections_with_reason(self):
+        selected = subprocess.run(
+            [
+                sys.executable, str(SELECT), "--capabilities", str(CAPABILITIES),
+                "--usage", str(USAGE), "--role", "implementation", "--depth", "3",
+                "--estimate-units", "20000", "--json",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        selection = json.loads(selected.stdout)
+        reasons = [alt["rejected_because"] for alt in selection.get("rejected_candidates", [])]
+        self.assertEqual(selection["status"], "ok")
+        codex = [alt for alt in selection["rejected_candidates"] if alt["target"]["providerInstanceId"] == "codex"]
+        self.assertTrue(codex)
+        self.assertTrue(all("below estimate" in alt["rejected_because"] for alt in codex))
+        self.assertTrue(any(reason.startswith("ranked below") and "score" in reason for reason in reasons), reasons)
+
     def test_budget_json_is_stored_as_object(self):
         with tempfile.TemporaryDirectory() as temp:
             journal = Path(temp) / "decisions.jsonl"
