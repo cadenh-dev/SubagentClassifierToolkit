@@ -788,6 +788,16 @@ def _verify(args: argparse.Namespace, started: float) -> tuple[dict[str, Any], i
     git_dir, git_common_dir = _validate_git_identity(
         repo_path, args.expected_git_dir, args.expected_git_common_dir
     )
+    if isinstance(plan.get("repos"), dict) and unit.get("repo") in plan["repos"]:
+        expected = plan["repos"][unit["repo"]].get("remote")
+        actual = _git_text(repo_path, ["remote", "get-url", "origin"])
+        def remote_key(value: str) -> str:
+            value = value.strip().removesuffix(".git")
+            value = re.sub(r"^(?:git@|ssh://git@)github\.com[:/]", "", value, flags=re.I)
+            value = re.sub(r"^https?://github\.com/", "", value, flags=re.I)
+            return value.lower().strip("/")
+        if not isinstance(expected, str) or remote_key(actual) != remote_key(expected):
+            raise VerifyError(f"origin remote mismatch for repo {unit['repo']!r}: expected {expected!r}, got {actual!r}")
 
     head_proc = _git(repo_path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
     if head_proc.returncode != 0:
