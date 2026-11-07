@@ -1,1 +1,1 @@
-ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaa
+This tracked fixture contains no credential-shaped value.
