@@ -138,10 +138,43 @@ class SchedulerTests(unittest.TestCase):
         self.assertIn("2026-11-10T03:00:00-07:00", output)
         self.assertIn("resume", output)
 
-    def test_cron_hint_has_five_fields(self):
+    def test_cron_hint_uses_local_time_fields(self):
         _, output = self.invoke("schedule-hint", "--target", DIRECT, "--now", "2026-11-10T07:00:00Z", "--host", "cron")
-        self.assertEqual(len(output.split("#")[0].split()[:5]), 5)
-        self.assertIn("python3 offpeak.py due", output)
+        line = next(row for row in output.splitlines() if not row.startswith("#"))
+        self.assertEqual(line.split()[:5], ["0", "3", "10", "11", "*"])  # 03:00 Phoenix, not 10:00 UTC
+        self.assertIn(str(SCRIPT.resolve()), line)
+        self.assertTrue(line.split()[6].endswith("offpeak.py"))
+
+    def test_status_opt_in_rule_not_gated_without_opt_in(self):
+        go = "opencode:opencode-go/deepseek-v4.1-flash"
+        with patch.dict("os.environ", {"OFFPEAK_OPT_IN": ""}):
+            self.assertFalse(json.loads(self.invoke("status", "--target", go, "--now", "2026-11-10T07:00:00Z")[1])["gated"])
+            self.assertTrue(json.loads(self.invoke("status", "--target", go, "--now", "2026-11-10T07:00:00Z", "--opt-in")[1])["gated"])
+
+    def test_estimate_defer_does_not_misreport_peak(self):
+        code, output = self.invoke("gate", "--target", DIRECT, "--now", "2026-11-10T00:30:00Z", "--estimate-minutes", "60")
+        data = json.loads(output)
+        self.assertEqual(code, 3)
+        self.assertFalse(data["is_peak"])
+        self.assertTrue(data["deferred"])
+        self.assertEqual(data["next_offpeak_start_local"], "2026-11-09T21:00:00-07:00")
+
+    def test_redefer_after_done_is_due_again(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.jsonl"
+            row = {"unit_id": "u", "target": DIRECT, "defer_until_utc": "2026-11-10T10:00:00Z", "created": "2026-11-10T07:00:00Z"}
+            offpeak.append_state(path, row)
+            offpeak.append_state(path, {"event": "done", "unit_id": "u", "created": "2026-11-10T10:05:00Z"})
+            offpeak.append_state(path, dict(row, defer_until_utc="2026-11-11T10:00:00Z", created="2026-11-11T07:00:00Z"))
+            due = json.loads(self.invoke("due", "--state", str(path), "--now", "2026-11-11T10:30:00Z")[1])
+            self.assertEqual([item["unit_id"] for item in due], ["u"])
+
+    def test_defer_unknown_unit_is_bad_input(self):
+        with tempfile.TemporaryDirectory() as temp:
+            plan = Path(temp) / "plan.json"
+            plan.write_text(json.dumps({"units": []}))
+            code = self.invoke("defer", "--plan", str(plan), "--unit", "nope", "--state", str(Path(temp) / "s"), "--now", "2026-11-10T07:00:00Z")[0]
+        self.assertEqual(code, 2)
 
     def test_shipped_windows_validate(self):
         self.assertEqual(len(offpeak.load_windows(WINDOWS)["rules"]), 3)
