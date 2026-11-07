@@ -374,9 +374,19 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
         deliverable = unit.get("deliverable")
         if not isinstance(deliverable, str) or not deliverable.strip():
             errors.append(f"{uid}: deliverable must be a non-empty string")
-        if multi_repo and any(isinstance(x, str) and re.search(r"watch.*(?:PR|pull request)|(?:PR|pull request).*watch", x, re.I) for x in (brief, deliverable)):
+        watch_request = any(
+            isinstance(x, str)
+            and re.search(
+                r"\b(?:watch|babysit)\b.{0,80}\b(?:PR|pull request)\b|"
+                r"\b(?:PR|pull request)\b.{0,80}\b(?:watch|babysit)\b",
+                x,
+                re.I,
+            )
+            for x in (brief, deliverable)
+        )
+        if multi_repo and watch_request:
             errors.append(f"{uid}: child must not watch or babysit a PR")
-        elif not multi_repo and any(isinstance(x, str) and re.search(r"watch.*(?:PR|pull request)|(?:PR|pull request).*watch", x, re.I) for x in (brief, deliverable)):
+        elif not multi_repo and watch_request:
             warnings.append(f"{uid}: child brief/deliverable mentions watching a PR")
 
         if role == "implementation" and not write_scope and isolation == "worktree":
@@ -476,11 +486,11 @@ def validate(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
                     if by_id[member].get("repo") != rk: errors.append(f"{member}: stack repo does not match unit repo")
                     for dep in unit_dependencies(by_id[member]):
                         if dep in by_id and dep not in prior: errors.append(f"integration.stack puts {member} before dependency {dep}")
+                    prior.add(member)
                 valid_bases = {repos.get(rk, {}).get("base_branch"), repos.get(rk, {}).get("integration_branch")} | produced.get(rk, set()) if isinstance(repos.get(rk), dict) else set()
                 if base not in valid_bases: errors.append(f"{label}.pr_base must be repo base/integration branch or an earlier unit branch")
                 for member in members:
                     if member in by_id: produced.setdefault(rk, set()).add(member)
-                prior.update(members)
 
         # Two children must not write the same path in a shared checkout.
         shared_writers = [
