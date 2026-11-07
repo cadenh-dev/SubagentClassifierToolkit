@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "provider_hint": "OpenAI/Codex",
+      "model": "gpt-6.1-sol",
+      "context_window": 1050000,
+      "max_output": 128000,
+      "tool_calling": true,
+      "image_input": true,
+      "structured_output": true,
+      "streaming": true,
+      "notes": "Reasoning always on; effort low|medium(default)|high|xhigh|max. Tool calling via Responses API. Default context capped at 500,000 in ChatGPT Work/Codex environments.",
+      "sources": ["https://developers.openai.com/api/docs/models/gpt-6.1-sol", "https://openai.com/index/gpt-6-1-sol/", "https://developers.openai.com/api/docs/guides/function-calling", "https://developers.openai.com/api/docs/guides/using-gpt-6"],
+      "retrieved": "2026-11-07",
+      "verified": false
+    },
+    {
+      "provider_hint": "OpenAI/Codex", "model": "gpt-6-astra", "context_window": 1050000, "max_output": 128000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Reasoning cannot be disabled; effort low..max. Tool use via Responses API.",
+      "sources": ["https://openai.com/index/gpt-6-astra/", "https://developers.openai.com/api/docs/models"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "OpenAI/Codex", "model": "gpt-6.1-terra", "context_window": 1050000, "max_output": 128000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Mid-tier multimodal; optimized for GUI computer use and document parsing.",
+      "sources": ["https://openai.com/index/gpt-6-1-terra/", "https://developers.openai.com/api/docs/models"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "OpenAI/Codex", "model": "gpt-6-luna", "context_window": 1050000, "max_output": 128000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "High-throughput, low-latency entry reasoning tier.",
+      "sources": ["https://developers.openai.com/api/docs/models/gpt-6-luna", "https://openai.com/index/gpt-6-sol-and-luna/"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "Anthropic", "model": "claude-opus-5-5", "context_window": 1000000, "max_output": 128000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Adaptive thinking; strict tool use and fine-grained tool streaming.",
+      "sources": ["https://platform.claude.com/docs/en/models/overview", "https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5", "https://platform.claude.com/docs/en/about-claude/model-deprecations"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "Anthropic", "model": "claude-sonnet-5-5", "context_window": 1000000, "max_output": 128000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Adaptive thinking, default effort high. Batches API beta may allow up to 300,000 output.",
+      "sources": ["https://platform.claude.com/docs/en/models/overview", "https://platform.claude.com/docs/en/build-with-claude/overview"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "Anthropic", "model": "claude-haiku-5-5", "context_window": 1000000, "max_output": 128000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Adaptive thinking, default effort medium.", "sources": ["https://platform.claude.com/docs/en/models/overview"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "Anthropic", "model": "claude-opus-5", "context_window": 1000000, "max_output": 128000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Legacy/active.", "sources": ["https://www.anthropic.com/news/claude-opus-5", "https://platform.claude.com/docs/en/about-claude/model-deprecations"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "Anthropic", "model": "claude-opus-4-8", "context_window": 1000000, "max_output": 128000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Legacy/active.", "sources": ["https://platform.claude.com/docs/en/about-claude/model-deprecations"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "Cursor", "model": "composer-2.5", "context_window": 200000, "max_output": "unknown",
+      "tool_calling": true, "image_input": true, "structured_output": "unknown", "streaming": true,
+      "notes": "Runs inside Cursor's agent loop; no documented max_output or JSON-schema mode.",
+      "sources": ["https://cursor.com/docs/models/cursor-composer-2-5", "https://cursor.com/blog/composer-2-5"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "xAI", "model": "grok-4.7", "context_window": 500000, "max_output": 500000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Reasoning on by default (low|medium|high default|xhigh). Output bounded by context window.",
+      "sources": ["https://docs.x.ai", "https://x.ai/news/introducing-grok-4-7"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "xAI", "model": "grok-4.6", "context_window": 500000, "max_output": 500000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Reasoning model.", "sources": ["https://docs.x.ai", "https://x.ai/news/introducing-grok-4-6"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "Google", "model": "gemini-3.8-flash", "context_window": 1048576, "max_output": 65536,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Thinking levels low|medium|high.", "sources": ["https://ai.google.dev", "https://deepmind.google/technologies/gemini/"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "DeepSeek", "model": "deepseek-v4.1-flash", "context_window": 1000000, "max_output": 384000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Thinking and non-thinking modes.", "sources": ["https://api-docs.deepseek.com/", "https://api-docs.deepseek.com/quick_start/pricing"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "Meta", "model": "muse-wonder-1.0", "context_window": 1048576, "max_output": 944000,
+      "tool_calling": true, "image_input": true, "structured_output": true, "streaming": true,
+      "notes": "Cursor integration defaults to 300k context unless Max Mode.",
+      "sources": ["https://ai.meta.com", "https://openrouter.ai/models/meta/muse-wonder"], "retrieved": "2026-11-07", "verified": false
+    },
+    {
+      "provider_hint": "Tencent", "model": "hy4", "context_window": 1048576, "max_output": "unknown",
+      "tool_calling": true, "image_input": true, "structured_output": "unknown", "streaming": true,
+      "notes": "Open weights; completion ceiling depends on deployment.",
+      "sources": ["https://github.com/Tencent-Hunyuan/Hy4-preview", "https://huggingface.co/tencent/Hy4-preview"], "retrieved": "2026-11-07", "verified": false
+    }
+  ]
+}
