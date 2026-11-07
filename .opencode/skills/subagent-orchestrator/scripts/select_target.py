@@ -713,6 +713,34 @@ def select(candidates: list[dict[str, Any]], *, ignore_cost: bool) -> dict[str, 
     return sorted(candidates, key=key)[0]
 
 
+def rejected_candidates(
+    chosen: dict[str, Any],
+    ranked: list[dict[str, Any]],
+    rejected_by_budget: list[tuple[dict[str, Any], str]],
+) -> list[dict[str, Any]]:
+    """Describe every eligible candidate that was not chosen, and why."""
+    def target(candidate: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "providerInstanceId": candidate["provider"],
+            "model": candidate["model"],
+            "options": candidate["options"],
+        }
+
+    out = []
+    for candidate in sorted(
+        (item for item in ranked if item is not chosen),
+        key=lambda item: (-item["score"], item["cost"], item["key"]),
+    ):
+        reason = (
+            f"ranked below selected target (score {candidate['score']:.1f} vs {chosen['score']:.1f}, "
+            f"cost {candidate['cost']:.1f} vs {chosen['cost']:.1f})"
+        )
+        out.append({"target": target(candidate), "rejected_because": reason})
+    for candidate, reason in rejected_by_budget:
+        out.append({"target": target(candidate), "rejected_because": reason})
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--capabilities", required=True, help="JSON from orchestrator_capabilities")
@@ -828,15 +856,20 @@ def main() -> int:
         budget_checked = True
 
     candidates = build_candidates(caps, policy, args)
+    rejected_by_budget: list[tuple[dict[str, Any], str]] = []
     if usage is not None:
         kept: list[dict[str, Any]] = []
         for candidate in candidates:
             remaining, source = usage_remaining(usage, candidate["provider"], candidate["model"])
             if remaining is None and not args.allow_unknown_budget:
                 budget_rejected += 1
+                rejected_by_budget.append((candidate, "remaining budget unknown"))
                 continue
             if remaining is not None and estimated_units is not None and remaining < estimated_units:
                 budget_rejected += 1
+                rejected_by_budget.append(
+                    (candidate, f"remaining budget {remaining} is below estimate {estimated_units}")
+                )
                 continue
             candidate["remaining"] = remaining
             candidate["remaining_source"] = source
@@ -909,20 +942,7 @@ def main() -> int:
         "budget": budget,
         "remaining_units": chosen.get("remaining"),
         "remaining_source": chosen.get("remaining_source"),
-        "rejected_candidates": [
-            {
-                "target": {
-                    "providerInstanceId": candidate["provider"],
-                    "model": candidate["model"],
-                    "options": candidate["options"],
-                },
-                "rejected_because": "ranked below the selected target by routing policy",
-            }
-            for candidate in sorted(
-                (item for item in candidates if item is not chosen),
-                key=lambda item: (-item["score"], item["cost"], item["key"]),
-            )
-        ],
+        "rejected_candidates": rejected_candidates(chosen, candidates, rejected_by_budget),
     }
     if args.json:
         print(json.dumps(result, indent=2))
