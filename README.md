@@ -2,7 +2,7 @@
 
 A T3 Code toolkit for deciding **when** to use subagents, **which** provider/model to use, **how** to deploy and supervise them, and **which project tools/languages** they should use.
 
-Ten skills ship in the box:
+Eleven skills ship in the box:
 
 - [`subagent-orchestrator`](.opencode/skills/subagent-orchestrator/) — routing, briefs, supervision, verification, multi-repo plans, a decision journal, and an outcome ledger.
 - [`project-classifier`](.opencode/skills/project-classifier/) — generates a project-local tool router from repository evidence.
@@ -14,6 +14,7 @@ Ten skills ship in the box:
 - [`secret-preflight`](.opencode/skills/secret-preflight/) — checks required credentials are available without reading values; scans tracked files for leaked secrets.
 - [`compat-matrix`](.opencode/skills/compat-matrix/) — joins live provider capabilities with sourced model constraints and filters eligible targets.
 - [`offpeak-scheduler`](.opencode/skills/offpeak-scheduler/) — runs DeepSeek work only in DeepSeek's off-peak (discounted) hours and defers it otherwise, with no polling.
+- [`session-kickoff`](.opencode/skills/session-kickoff/) — gives the main agent a role at thread start (planner, builder, reviewer, solo), saves it per project, and supplies the start-of-thread rule.
 
 The main skill is [`.opencode/skills/subagent-orchestrator/`](.opencode/skills/subagent-orchestrator/). It is not just a prompt that prints a model name. It is an operating procedure for:
 
@@ -237,6 +238,17 @@ python3 .opencode/skills/offpeak-scheduler/scripts/offpeak.py schedule-hint --ta
 
 The discount applies to DeepSeek's direct API (and OpenRouter's DeepSeek route). OpenCode Go and Zen have no time-of-day pricing, so their rules are opt-in (`--opt-in` or `OFFPEAK_OPT_IN=1`). Window data is unverified research; see the skill's `references/windows.md`.
 
+Thread and project roles:
+
+```bash
+python3 .opencode/skills/session-kickoff/scripts/kickoff.py set --preset planner --repo . --agents-md
+python3 .opencode/skills/session-kickoff/scripts/kickoff.py brief --repo .      # what the main agent adopts
+python3 .opencode/skills/session-kickoff/scripts/kickoff.py onboard --repo .    # new-project checklist
+python3 .opencode/skills/session-kickoff/scripts/kickoff.py install-rules --file ~/.claude/CLAUDE.md
+```
+
+Resolution order: `<repo>/.agent-role.json` > `~/.config/agent-role/default.json` > built-in `planner`. `install-rules` manages only its marked block in a global instruction file.
+
 The compatibility matrix's local data (`data/constraints.json`) is web research marked `verified: false`; live capabilities always win. Run `compat_matrix.py stale` to list entries that need a human re-check.
 
 ## What is in the box
@@ -368,4 +380,4 @@ See [`docs/requirements.md`](docs/requirements.md) for the requirement-to-implem
 
 ## Status
 
-Ten skills: subagent orchestration (with decision journal, verification harness, and multi-repo plans), project toolchain classification, a read-only skill linter, and operations skills for health checks, guardrails, worktree cleanup, benchmarking, secret preflight, model compatibility, and DeepSeek off-peak scheduling. All roadmap items 1–15 are implemented. The routing policy is a starter heuristic, not a benchmark. Adjust `data/routing-policy.json` to match your own quality and cost measurements, using the outcome ledger and benchmark runner as evidence. The project classifier is conservative by design; low-confidence evidence is reported, not hidden.
+Eleven skills: subagent orchestration (with decision journal, verification harness, and multi-repo plans), project toolchain classification, a read-only skill linter, and operations skills for health checks, guardrails, worktree cleanup, benchmarking, secret preflight, model compatibility, DeepSeek off-peak scheduling, and session roles. All roadmap items 1–15 are implemented. The routing policy is a starter heuristic, not a benchmark. Adjust `data/routing-policy.json` to match your own quality and cost measurements, using the outcome ledger and benchmark runner as evidence. The project classifier is conservative by design; low-confidence evidence is reported, not hidden.

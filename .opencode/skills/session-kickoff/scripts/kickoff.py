@@ -152,18 +152,17 @@ def brief_text(resolved: dict[str, Any]) -> str:
     else:
         rows.append("- No delegation.")
     policies = role.get("policies", {})
-    rows += ["Rules:", f"- parent_codes={policies.get('parent_codes')}; review_required={policies.get('review_required')}; ignore_cost={policies.get('ignore_cost')}; offpeak_deepseek={policies.get('offpeak_deepseek')}."]
-    if policies.get("acceptance_checklist"):
-        rows.extend(f"- {item}" for item in policies["acceptance_checklist"])
-    delegation_summary = "; ".join(
-        f"{unit} uses {target.get('providerInstanceId')} {target.get('model')}"
-        for unit, target in role.get("delegation", {}).items()
-        if target.get("providerInstanceId") and target.get("providerInstanceId") != "main"
-    )
-    announcement = f"Role: {name} ({source}) — {does.rstrip('.')}"
-    if delegation_summary:
-        announcement += f"; {delegation_summary}"
-    rows.append(f"Announcement: {announcement}.")
+    rows.append("Rules:")
+    for key in sorted(policies):
+        value = policies[key]
+        if key == "acceptance_checklist" or key.endswith("_notes"):
+            continue
+        rows.append(f"- {key}={json.dumps(value)}")
+    rows.extend(f"- {item}" for item in policies.get("acceptance_checklist", []))
+    rows.extend(f"- {policies[key]}" for key in sorted(policies) if key.endswith("_notes"))
+    label = {"project": "project default", "global": "your default", "builtin": "built-in default"}.get(source, source)
+    announcement = f"Role: {name} ({label}) — {role.get('summary', does).rstrip('.')}. Change it with the session-kickoff skill."
+    rows.append(f"Announcement: {announcement}")
     return "\n".join(rows)
 
 

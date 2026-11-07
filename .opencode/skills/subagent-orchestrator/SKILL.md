@@ -384,6 +384,7 @@ python3 scripts/select_target.py --capabilities caps.json \
 - [`references/outcomes.md`](references/outcomes.md) — outcome-ledger schema and evidence rules.
 - [`references/decisions.md`](references/decisions.md) — decision-journal schema (why a target won, rejected alternatives).
 - [`references/multi-repo.md`](references/multi-repo.md) — multi-repo plans, per-repo units, PR stacks.
+- The `session-kickoff` skill sets the main agent's role (e.g. planner: parent never codes, pinned delegate targets); treat its brief as user constraints.
 - `offpeak-scheduler` — gate DeepSeek work and resume deferred child units at the next off-peak window.
 - [`assets/brief-template.md`](assets/brief-template.md) — copy-paste brief.
 - [`assets/plan.schema.json`](assets/plan.schema.json) — delegation plan contract.
