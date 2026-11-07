@@ -303,7 +303,7 @@ def handler(args: argparse.Namespace, rules: list[dict[str, Any]], sleep_fn: Cal
         start = next_transition(at, rule, False) if is_peak(at, rule) else at
         prompt = args.prompt or f"Resume deferred DeepSeek work for {args.target}; run offpeak.py due and continue eligible units."
         if args.host == "t3":
-            print(f"One-time T3 schedule_task at {start.isoformat().replace('+00:00','Z')} ({fmt(start, zone)}): {prompt}")
+            print(f"schedule_task({{title: {json.dumps('Resume DeepSeek off-peak work')}, schedule: {{type: \"once\", runAt: {json.dumps(start.isoformat().replace('+00:00','Z'))}}}, prompt: {json.dumps(prompt)}}})  // {fmt(start, zone)} local; {start.isoformat().replace('+00:00','Z')} UTC")
         elif args.host == "claude-code":
             print(f"One-shot CronCreate or /schedule at {fmt(start, zone)} ({start.isoformat().replace('+00:00','Z')}): {prompt}")
         else:
