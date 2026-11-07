@@ -33,7 +33,7 @@
       ],
       "deliverable": "Branch, commit, push, and PR against main.",
       "brief": "ROLE: implementation\nOBJECTIVE: Move refresh-token rotation into the auth service without changing the public API contract.\n\nCONTEXT\n- Repo /work/app\n- Base branch main at 4f2c1a\n- Read AGENTS.md and services/auth/README.md\n\nWRITE SCOPE\n- services/auth/**\n- tests/auth/**\n\nDO NOT TOUCH\n- web/**, infra/**, shared/**\n\nACCEPTANCE\n- A used refresh token cannot be replayed.\n- A valid refresh token rotates once and keeps the session alive.\n- pnpm test --filter auth passes.\n\nDELIVERABLE\n- Branch auth-refresh-rotation, commit, push, PR against main.\n- Report the PR URL, head SHA, and check status.",
-      "repo": "core"
+      "repo": "api"
     },
     {
       "id": "web-auth",
@@ -64,7 +64,7 @@
       ],
       "deliverable": "Branch, commit, push, and PR against main.",
       "brief": "ROLE: implementation\nOBJECTIVE: Update the web client to handle refresh-token rotation and one retry after a 401.\n\nWRITE SCOPE\n- web/auth/**\n- web/tests/auth/**\n\nDO NOT TOUCH\n- services/**, infra/**\n\nACCEPTANCE\n- A 401 triggers one refresh attempt and retries the request.\n- A failed refresh logs the user out.\n- pnpm test --filter web-auth passes.\n\nDELIVERABLE\n- Branch web-auth-rotation, commit, push, PR against main.\n- Report the PR URL, head SHA, and check status.",
-      "repo": "core"
+      "repo": "web"
     },
     {
       "id": "migration-review",
@@ -106,12 +106,21 @@
       "pnpm lint"
     ],
     "review": true,
-    "notes": "Merge the API change first; the web client can tolerate a rotating token after its own merge."
+    "notes": "Merge the API change first; the web client can tolerate a rotating token after its own merge.",
+    "stack": [
+      { "repo": "api", "units": ["api-auth"], "pr_base": "main" },
+      { "repo": "web", "units": ["web-auth"], "pr_base": "main" }
+    ]
   },
   "fallback": "If no implementation target meets the depth, do the smaller unit in the parent and keep the independent unit delegated.",
   "repos": {
-    "core": {
-      "remote": "cadenh-dev/core",
+    "api": {
+      "remote": "cadenh-dev/api",
+      "base_branch": "main",
+      "integration_branch": "multi-repo-integration"
+    },
+    "web": {
+      "remote": "cadenh-dev/web",
       "base_branch": "main",
       "integration_branch": "multi-repo-integration"
     }

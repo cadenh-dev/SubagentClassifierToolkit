@@ -129,6 +129,11 @@
             "type": "string",
             "minLength": 1
           },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Key in the top-level repos map; required for implementation units that declare writes in a multi-repository plan."
+          },
           "brief": {
             "type": "string",
             "minLength": 1
@@ -155,6 +160,20 @@
         },
         "notes": {
           "type": "string"
+        },
+        "stack": {
+          "type": "array",
+          "description": "Ordered per-repository pull request stack. A unit appears once under its own repo, and pr_base names that repo's base/integration branch or a branch from an earlier unit.",
+          "items": {
+            "type": "object",
+            "required": ["repo", "units", "pr_base"],
+            "additionalProperties": false,
+            "properties": {
+              "repo": { "type": "string", "minLength": 1 },
+              "units": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "pr_base": { "type": "string", "minLength": 1 }
+            }
+          }
         }
       }
     },
