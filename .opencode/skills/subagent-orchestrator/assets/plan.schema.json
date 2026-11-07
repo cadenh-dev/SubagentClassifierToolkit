@@ -161,6 +161,7 @@
     "fallback": {
       "type": "string",
       "description": "What the parent does if no target is eligible or a unit fails."
-    }
+    },
+    "repos": {"type":"object", "additionalProperties":{"type":"object", "required":["remote"], "additionalProperties":false, "properties":{"remote":{"type":"string","minLength":1},"base_branch":{"type":"string"},"integration_branch":{"type":"string"},"local_path":{"type":"string"}}}}
   }
 }
