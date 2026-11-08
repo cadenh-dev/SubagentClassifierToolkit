@@ -50,9 +50,15 @@ Deterministic, read-only checks for Agent Skills:
 ### 7. Verification harness
 `scripts/verify_unit.py` runs one unit's declared commands with a bounded timeout and bounded stdout/stderr capture, then compares the committed `base..HEAD` diff against the unit's declared write scope. It reports command failures, timeouts, out-of-scope paths, invalid scopes, and path errors as JSON with an explicit verdict scope and limitations. Commands require `--allow-commands`; shell syntax requires a separate `--shell` opt-in. The harness never treats passing commands as proof of prose acceptance criteria and does not append to the ledger automatically. After parent review, `scripts/record_verification.py` transfers plan metadata to the ledger while requiring the caller to supply depth, outcome, verification level, retries, and review-findings count.
 
+### 8. Skill-text evals
+`evals/run_skill_evals.py` sends pressure scenarios (pinned target over budget, child claims success while tests fail, rate-limited pin, no eligible coder, and others) to any agent CLI with and without the skill, and grades the JSON decision deterministically. A trigger suite checks whether the skill loads at all. CI checks the grader and the scenarios' rule anchors without calling a model.
+
+### 9. Fix loop and bootstrap
+Phase 7 runs three gates per unit (machine check, spec check, quality review). Failures go to a fix round built by `scripts/fix_brief.py`, with a two-round limit before escalation. `scripts/install_bootstrap.py` adds a delegation check to a project's `AGENTS.md` so the skill loads without the task wording having to match its description.
+
 ## Next
 
-### 8. Capability registry / doctor
+### 10. Capability registry / doctor
 One command that reports:
 
 - languages and runtime versions
@@ -63,7 +69,7 @@ One command that reports:
 
 The project classifier's profile is a good starting point; this adds versions and health checks.
 
-### 9. Repo guardrail generator
+### 11. Repo guardrail generator
 Generate or update `AGENTS.md` from the project profile:
 
 - build/test/lint commands
@@ -74,10 +80,10 @@ Generate or update `AGENTS.md` from the project profile:
 
 Pairs naturally with the project classifier.
 
-### 10. Worktree / PR janitor
+### 12. Worktree / PR janitor
 Find stale worktrees, orphan branches, unlinked PRs, and abandoned delegated tasks. Offer cleanup only after confirmation; never delete unmerged work silently.
 
-### 11. Benchmark runner
+### 13. Benchmark runner
 Run the same task on multiple providers/models with a fixed brief, then compare:
 
 - test pass rate
@@ -88,7 +94,7 @@ Run the same task on multiple providers/models with a fixed brief, then compare:
 
 The output feeds the routing policy.
 
-### 12. Decision journal
+### 14. Decision journal
 Append-only record of:
 
 - task classification
@@ -99,10 +105,10 @@ Append-only record of:
 
 Useful for debugging "why did it pick Cursor for that?" and for auditing cost. The outcome ledger covers the result; a decision journal would also capture the rejected alternatives.
 
-### 13. Secret-safe bootstrap
+### 15. Secret-safe bootstrap
 A preflight that checks required credentials through `request_secret` and never writes values to the repo or logs.
 
-### 14. Compatibility matrix
+### 16. Compatibility matrix
 Provider/model/option matrix with known constraints:
 
 - tool calling
@@ -115,7 +121,7 @@ Provider/model/option matrix with known constraints:
 
 Read from live capabilities where possible; keep only stable constraints locally.
 
-### 15. Multi-repo orchestrator
+### 17. Multi-repo orchestrator
 For work that spans repositories:
 
 - one unit per repo/worktree

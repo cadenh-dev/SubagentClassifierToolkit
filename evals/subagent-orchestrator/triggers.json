@@ -1,0 +1,103 @@
+{
+  "skill": "subagent-orchestrator",
+  "version": 1,
+  "notes": "Should the agent load subagent-orchestrator for this request? Positive cases avoid the word 'subagent' where possible so they test the trigger, not keyword matching. Negative cases are work the parent should just do.",
+  "cases": [
+    {
+      "id": "explicit-delegate",
+      "load": true,
+      "user": "Delegate the CSV export endpoint; don't write code yourself."
+    },
+    {
+      "id": "pinned-model",
+      "load": true,
+      "user": "Have gpt-6.1-sol with high reasoning do the billing ORM migration."
+    },
+    {
+      "id": "hands-off",
+      "load": true,
+      "user": "I want you to only plan and review on this one. Someone else should write the code for the new export feature."
+    },
+    {
+      "id": "parallel-matrix",
+      "load": true,
+      "user": "Run the integration suite against Postgres 15, 16, and 17 at the same time and tell me which ones fail."
+    },
+    {
+      "id": "second-opinion",
+      "load": true,
+      "user": "Get a second pair of eyes from a different model on the auth diff before I merge it."
+    },
+    {
+      "id": "independent-areas",
+      "load": true,
+      "user": "Add rate limiting to the API gateway, a settings page for it in the web app, and a dashboard panel in grafana/. These are owned by different teams and live in separate directories."
+    },
+    {
+      "id": "child-reported",
+      "load": true,
+      "state": "A delegated task 'api-auth' just completed. Its summary says: 'Implemented rotation, all tests pass, PR #42.'",
+      "user": "The auth task finished. Is it good to merge?"
+    },
+    {
+      "id": "which-model",
+      "load": true,
+      "user": "Which model should handle a depth-4 security review of the payments module?"
+    },
+    {
+      "id": "typo",
+      "load": false,
+      "user": "Fix the typo 'recieve' in src/net/socket.py."
+    },
+    {
+      "id": "explain",
+      "load": false,
+      "user": "What does parse_config() return when the file is empty?"
+    },
+    {
+      "id": "coupled-small",
+      "load": false,
+      "user": "Rename parse_config to load_config in config.py and update its two callers in cli.py."
+    },
+    {
+      "id": "run-tests",
+      "load": false,
+      "user": "Run the unit tests and tell me if anything fails."
+    },
+    {
+      "id": "lint-skill",
+      "load": false,
+      "user": "Lint the skill I just wrote in .opencode/skills/release-notes."
+    }
+  ],
+  "distractors": [
+    {
+      "name": "code-review",
+      "description": "Review the current diff, a PR, or a branch for correctness bugs and report findings by severity."
+    },
+    {
+      "name": "run",
+      "description": "Launch and drive this project's app or test suite to see a change working. Use when asked to run, start, or test the app."
+    },
+    {
+      "name": "simplify",
+      "description": "Review changed code for reuse, simplification, and efficiency cleanups, then apply the fixes."
+    },
+    {
+      "name": "migration-planner",
+      "description": "Use when planning a database or ORM migration: inventories models, orders steps, and writes a rollback plan."
+    },
+    {
+      "name": "security-review",
+      "description": "Complete a security review of the pending changes on the current branch."
+    },
+    {
+      "name": "ci-matrix",
+      "description": "Use when editing CI workflow files or adding a version to a CI test matrix."
+    },
+    {
+      "name": "deep-research",
+      "description": "Use when a question needs research across multiple web sources synthesized into a report."
+    }
+  ]
+}

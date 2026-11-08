@@ -1,6 +1,6 @@
 ---
 name: subagent-orchestrator
-description: Classify work and deploy T3 subagents. Use when a task has independent parallel units, needs a cross-provider model, a separate checkout or PR, background execution, or independent review, or when the user requires delegation, forbids parent coding, or pins a provider/model. Chooses the cheapest capable target by default, or the strongest available target when IGNORE_COST is true, honors exact user pins, then writes self-contained briefs, launches delegates, verifies results, and records outcomes.
+description: Use when a task has two or more independent units that can run in parallel, needs a different provider's model, a separate checkout or PR, background execution, or an independent review; when the user asks to delegate or use subagents, forbids the parent from writing code, or names a provider, model, or setting; when a delegated task reports back and its result must be checked; or when asked only which target should handle a task.
 ---
 
 # Subagent Orchestrator
@@ -64,6 +64,20 @@ Delegate only when at least one is true:
 If the user requires delegation or forbids parent execution, delegation is mandatory even for a row that says "No". Skip the do-it-yourself path; if no eligible child exists, stop and ask.
 
 If the answer is no and the user left the approach open, do the work directly and stop reading this skill.
+
+### Excuses that break Phase 1
+
+If you catch yourself thinking the left column, do the right column.
+
+| Excuse | Reality |
+|---|---|
+| "The skill is loaded, so I should delegate." | Loading the skill is not a reason. The table above decides, and its default is no. |
+| "The user said 'where it helps', so I should split it." | That leaves the approach open. A coupled change is one unit or no delegation. |
+| "More children means a more thorough job." | Each child costs a brief, a review, and a merge. Start with 2–4. |
+| "It's tiny. I'll just do it, even though they said delegate." | The user's instruction outranks the trivial-work default. Delegate it. |
+| "No coder is available, so I'll write it myself just this once." | If parent writes are forbidden, that is taking the work back. Report `UNAVAILABLE` and ask. |
+| "No coder is available, but Claude can code." | Local policy bars Claude from `implementation` and `test`. Report `UNAVAILABLE`. |
+| "Parallel means new threads." | Parallel means child tasks. `t3_thread_launch` needs an explicit request for a new thread. |
 
 ## Phase 2 — Classify into work units
 
@@ -270,6 +284,22 @@ Rules:
 - A child never starts another child unless the brief explicitly allows it. Even then, keep the fan-out bounded and make the child report its own children.
 - If the user forbade parent writes, do not integrate by editing the parent checkout. Use a delegated integration unit in a worktree, or ask the user to relax the constraint.
 
+### Excuses that break Phase 5
+
+None of these is an exception.
+
+| Excuse | Reality |
+|---|---|
+| "The pin is a hard constraint, so I'll launch and flag the budget risk." | The budget check runs before launch, pinned or not. Over budget is `BUDGET_EXCEEDED`, no launch. |
+| "The launch will be rejected anyway if it's over budget." | Nothing checks the budget for you. Run the check before `delegate_task`; an over-budget unit gets no call at all. |
+| "The pinned target hit a 429. I'll relaunch it after the cooldown." | Do not relaunch, now or later. You cannot schedule a launch. Report the limit and the retry time, then ask. The user decides whether to wait. |
+| "It's only cooling down, so I'll retry it." | A cooling-down target is not a candidate, pinned or not. Pick another eligible target if it was not pinned; otherwise report and ask. |
+| "A similar model is free, and the user wants progress." | Swapping a pinned target is the exact failure the pin guards against. Report and ask. |
+| "The finished child has the context, so I'll message it the fix." | `t3_thread_send` only steers a running child. New work is a new `delegate_task` with the findings in the brief. |
+| "The strongest model will research better." | Web research goes to `antigravity:gemini-3.8-flash` by local policy. |
+| "Nothing to do while I wait, so I'll add a review or check status." | Do not review work still in flight, and do not poll. End the turn. |
+| "If I can't launch, I'll still list the call and mark it blocked." | A call you would not make is not a next step. Report the block instead. |
+
 ## Phase 6 — Supervise
 
 Keep a small table:
@@ -287,20 +317,36 @@ Keep a small table:
 - Use `t3_thread_send` only to steer a running child: answer a blocking question, correct scope, or redirect. Never use it to start a new task on a finished child.
 - Use `t3_thread_read` to inspect the child's final result; reading marks it delivered.
 
-## Phase 7 — Verify and integrate
+## Phase 7 — Verify, fix, and re-review
 
-Do not accept "done" as done.
+Do not accept "done" as done. Each implementation or test unit goes through three gates, in order, as soon as it reports back. Do not batch reviews until the end, and do not start a unit that depends on this one until it is accepted.
 
-1. **Read the diff.** Check scope: only the declared write scope changed.
-2. **Run the acceptance commands yourself** when feasible. At minimum, inspect the child's exact commands and output.
-3. **Run the full suite** after merging or applying multiple units. If the parent may not write, a delegated integration unit performs the merge and suite; the parent inspects the result.
-4. **Review the review.** A review child's findings are inputs; verify each one before acting.
-5. **Recheck with a new delegate.** After fixes land (from a delegated fix unit when the parent may not write), launch a fresh `delegate_task` whose brief includes the prior findings, the fix commits/diff, and the original acceptance criteria. Do not send the recheck to the finished reviewer thread.
-6. **Link the PR in the parent** with `link_pull_request` (or `link_pull_requests` for several) as soon as it exists or after a takeover/push. The parent owns the PR relationship. A child never watches a PR.
-7. **Watch only when asked or when the remaining work is waiting on checks/reviews.** Then call `watch_pull_request` and end the turn.
-8. **Record the outcome** with `scripts/outcome_ledger.py record` when actual usage, duration, or verification status is known. Mark whether the parent verified the result; do not record a child's self-report as verified. The ledger is local metadata, so appending it does not violate a no-parent-write constraint.
-9. **Report** the target used, units completed, tests run, PR links, and any unresolved risks.
-10. **Update the usage snapshot** if the user maintains one and actual usage is available. If the provider does not report it, mark the snapshot stale.
+```text
+child reports done
+  -> Gate 1  machine check   verify_unit.py: declared commands + write scope
+  -> Gate 2  spec check      does the diff meet each acceptance criterion?
+  -> Gate 3  quality review  fresh review child at depth >= 3; parent reads the diff at depth <= 2
+  -> accept the unit, record the outcome, release dependent units
+any gate fails -> fix round -> back to Gate 1
+```
+
+1. **Gate 1: machine check.** Run [`scripts/verify_unit.py`](scripts/verify_unit.py) on the unit's branch (see [`references/operations.md`](references/operations.md) §8). Check scope: only the declared write scope changed. With no plan file, run the unit's acceptance commands yourself and compare `git diff --name-only <base>..<head>` with the scope. If it fails, go straight to a fix round. Do not spend a reviewer on a unit whose tests fail.
+2. **Gate 2: spec check.** Read the diff against each acceptance criterion. Missing behavior, extra behavior, or a criterion the tests do not exercise is a gap. The parent can do this check; at depth 4–5, use a review child with the criteria in its brief.
+3. **Gate 3: quality review.** At depth 3 or more, or for anything security-sensitive, launch a fresh review child. At depth 1–2 the parent reads the diff. Review the review: a review child's findings are inputs, so verify each one before acting on it.
+4. **Fix round.** A failed gate re-opens the unit:
+   - Launch a new `delegate_task`, never a message to the finished child. Use the same role, write scope, and branch. Base it on the unit's current head.
+   - Build the brief with [`scripts/fix_brief.py`](scripts/fix_brief.py): it turns a failing `verify_unit` report and review findings into one self-contained fix brief.
+   - Keep the same target unless the failure shows the depth was underrated. Raise it only when the target is not user-pinned.
+   - The parent fixes it directly only when parent writes are allowed and the fix is trivial.
+   - After the fix, start again at Gate 1. Then rerun every gate from the one that failed onward.
+5. **Recheck with a new delegate.** After fixes land, a re-review is a fresh `delegate_task` whose brief includes the prior findings, the fix commits/diff, and the original acceptance criteria. Do not send the recheck to the finished reviewer thread.
+6. **Two fix rounds, then escalate.** If a unit fails a gate after two fix rounds, stop. Report the history to the user (what failed, what was tried, the current diff) and ask whether to raise the target, re-split the unit, or take it another way. Do not start a third round on your own.
+7. **Integrate.** After all units are accepted, merge and run the full suite. At depth 3 or more, run one final review child on the combined diff. If the parent may not write, a delegated integration unit does the merge and suite; the parent inspects the result.
+8. **Link the PR in the parent** with `link_pull_request` (or `link_pull_requests` for several) as soon as it exists or after a takeover/push. The parent owns the PR relationship. A child never watches a PR.
+9. **Watch only when asked or when the remaining work is waiting on checks/reviews.** Then call `watch_pull_request` and end the turn.
+10. **Record the outcome** with `scripts/outcome_ledger.py record`, or `scripts/record_verification.py` from a reviewed `verify_unit` report, when actual usage, duration, or verification status is known. Pass the number of fix rounds as `--retries`. Mark whether the parent verified the result; do not record a child's self-report as verified. The ledger is local metadata, so appending it does not violate a no-parent-write constraint.
+11. **Report** the target used, units completed, fix rounds, tests run, PR links, and any unresolved risks.
+12. **Update the usage snapshot** if the user maintains one and actual usage is available. If the provider does not report it, mark the snapshot stale.
 
 A user-pinned target stays pinned. If it becomes unavailable, report the exact reason and ask; do not quietly reroute to another target.
 
@@ -309,6 +355,17 @@ For a child that created a PR, its last line should be:
 ```text
 PR <full URL>, head <SHA>, checks and reviews <state>.
 ```
+
+### Excuses that break Phase 7
+
+| Excuse | Reality |
+|---|---|
+| "The child says all tests pass." | That is a claim. Gate 1 runs the tests. If they fail, the tests win. |
+| "The out-of-scope edit was minor." | Out-of-scope files fail Gate 1. Revert them, or widen the scope on purpose and say so. |
+| "The fix passed verify_unit, so the unit is done." | A fix that came from review findings goes back through review. Recheck with a new delegate. |
+| "A stronger model will fix it faster." | Keep the target unless the failure shows the depth was underrated. A scope violation or a missed test is a brief problem, not a model problem. |
+| "One more fix round will get it." | After two rounds, escalate. A third blind retry usually means the brief or the split is wrong. |
+| "I'll review everything once all units finish." | Review each unit as it lands. Late reviews make dependent units build on broken work. |
 
 ## Failure handling
 
@@ -323,7 +380,7 @@ PR <full URL>, head <SHA>, checks and reviews <state>.
 | Requested target unavailable | Sticky pin. Report the exact reason; ask whether to wait, change target, or relax the constraint. Never substitute silently. |
 | Authentication failure (401/403/sign-in) | Report `authentication required for <provider>`; stop that unit. Do not describe it as unavailable or reroute silently. Retry only after the user authenticates or authorizes another target. |
 | No eligible target | Do the work in the parent only if the user permits parent execution; otherwise ask or return `UNAVAILABLE`. |
-| Child summary disagrees with tests | Tests win. Re-open the unit. |
+| Child summary disagrees with tests | Tests win. Re-open the unit with a fix round (Phase 7). |
 
 ## Route-only mode
 
@@ -387,3 +444,7 @@ python3 scripts/select_target.py --capabilities caps.json \
 - [`scripts/select_target.py`](scripts/select_target.py) — deterministic route-only selector with exact pins.
 - [`scripts/validate_plan.py`](scripts/validate_plan.py) — plan validator.
 - [`scripts/outcome_ledger.py`](scripts/outcome_ledger.py) — append-only outcome records and summaries.
+- [`scripts/verify_unit.py`](scripts/verify_unit.py) — Gate 1: declared commands and write scope for one unit.
+- [`scripts/record_verification.py`](scripts/record_verification.py) — reviewed verification report to outcome-ledger record.
+- [`scripts/fix_brief.py`](scripts/fix_brief.py) — fix-round brief from a failing report and review findings.
+- [`scripts/install_bootstrap.py`](scripts/install_bootstrap.py) — adds the delegation check in [`assets/bootstrap.md`](assets/bootstrap.md) to a project's `AGENTS.md`, so this skill loads when it should.

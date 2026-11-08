@@ -672,7 +672,7 @@ def render_skill(name: str, profile: dict[str, Any], out_dir: Path) -> str:
     lines += [
         "---",
         f"name: {name}",
-        f"description: Route tasks in {root_name} to its detected languages, frameworks, tools, and commands. Generated from repository evidence; use when choosing between competing languages, engines, build systems, test runners, or package managers.",
+        f"description: Use when working in {root_name} and choosing between competing languages, engines, build systems, test runners, or package managers, or when picking the command to build, test, or run part of the project.",
         "---",
         "",
         f"# {root_name} Tool Router",

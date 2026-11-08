@@ -31,6 +31,11 @@ This maps the original classifier requirements to the implementation.
 | Outcome feedback | `.opencode/skills/subagent-orchestrator/scripts/outcome_ledger.py`; `references/outcomes.md`; `tests/test_outcome_ledger.py` | Append-only metadata; distinguishes verified from claimed; never auto-tunes policy |
 | Skill packaging checks | `.opencode/skills/skill-linter/`; `tests/test_skill_linter.py` | Read-only frontmatter, name, links, syntax, secret, and path checks |
 | Project-local tool classifier | `.opencode/skills/project-classifier/`; `build_project_classifier.py`; `tests/test_project_classifier.py` | Detects languages, frameworks, engines, commands; safe refresh preserves unrelated files; probes Python runtime usability |
+| Trigger-only skill descriptions | Every `SKILL.md` `description`; `tests/test_skill_evals.py` `DescriptionTests` | Descriptions start with "Use when" and never summarize the workflow, so agents read the skill instead of following a summary |
+| Skill loads when it should | `assets/bootstrap.md`; `scripts/install_bootstrap.py`; `tests/test_install_bootstrap.py`; `evals/.../triggers.json` | Opt-in AGENTS.md snippet with the load conditions and an explicit "otherwise do it yourself" |
+| Skill text is tested, not just scripts | `evals/run_skill_evals.py`; `evals/subagent-orchestrator/scenarios.json`; `tests/test_skill_evals.py` | Pressure scenarios graded deterministically; CI checks the grader and that every rule a scenario relies on still exists in SKILL.md; live runs are manual |
+| Fix loop and review cadence | Phase 7 gates; operations §8a; briefs "Fix round"; `scripts/fix_brief.py`; `tests/test_fix_brief.py` | Machine check, spec check, quality review per unit; fix rounds are new delegates; two rounds then escalate |
+| Agents do not rationalize past rules | "Excuses that break Phase 1/5/7" tables in SKILL.md | Rows come from observed eval failures where possible |
 
 ## Deliberate deviations
 

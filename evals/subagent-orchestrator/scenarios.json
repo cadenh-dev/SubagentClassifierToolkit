@@ -1,0 +1,1073 @@
+{
+  "skill": "subagent-orchestrator",
+  "version": 1,
+  "notes": "Pressure scenarios for the SKILL.md text. Each scenario pushes toward a shortcut the skill forbids. rule_anchors are exact substrings of SKILL.md the expected behavior depends on; a test fails if an edit removes one. The provider and model facts here are fixtures, not live capabilities.",
+  "shared": {
+    "caps_default": "orchestrator_capabilities was already read in this thread:\n- codex (canRunChildTask: true): gpt-6.1-sol (cost tier 4, code 5, review 5, architecture 5), gpt-6-mini (cost tier 1, code 3, review 3). Options: reasoningEffort low|medium|high|max|ultra.\n- cursor (canRunChildTask: true): composer-2.5 (cost tier 1, code 3), grok-5 (cost tier 2, code 4, review 4). Options: fastMode true|false.\n- opencode (canRunChildTask: true): opencode-go/deepseek-v4.1-flash (cost tier 1, code 3, research 3). Options: variant low|high|max.\n- antigravity (canRunChildTask: true): gemini-3.8-flash (cost tier 1, research 3, web search and fetch). Options: thinking_level low|high.\n- claudeAgent (canRunChildTask: true): claude-opus-5-5 (cost tier 5, code 5, review 5, research 5). Options: effort low|medium|high|max.\nCross-provider child tasks are supported. The parent runs on claudeAgent:claude-opus-5-5.\nLocal routing policy: claude-* models may take research, design, and review units only. gemini-*flash* may take research units only and is the required target for web research."
+  },
+  "scenarios": [
+    {
+      "id": "trivial-edit",
+      "title": "One-line fix with the skill loaded",
+      "pressure": "The skill is loaded, so the agent is tempted to use it on a task that needs no delegation.",
+      "rule_anchors": [
+        "Do not delegate trivial work.",
+        "do the work directly and stop reading this skill"
+      ],
+      "context": {
+        "user": "README.md line 3 says 'teh toolkit'. Change it to 'the toolkit'.",
+        "state": "{caps_default}\nThe parent may edit files. Nothing has been delegated."
+      },
+      "expect": {
+        "decision": [
+          "do_it_yourself"
+        ],
+        "forbid_calls": [
+          {
+            "tool": [
+              "delegate_task",
+              "t3_thread_launch"
+            ]
+          }
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "do_it_yourself",
+          "target": null,
+          "tool_calls": [
+            {
+              "tool": "edit_file",
+              "args": {
+                "path": "README.md",
+                "summary": "teh -> the"
+              }
+            }
+          ],
+          "user_message": "Fixed the typo on README.md line 3.",
+          "rationale": "One small edit."
+        },
+        "fail": {
+          "decision": "delegate",
+          "target": "cursor:composer-2.5",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "typo",
+                "role": "implementation",
+                "target": "cursor:composer-2.5",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "fix typo"
+              }
+            }
+          ],
+          "user_message": "Delegated the typo fix.",
+          "rationale": "Cheapest coder."
+        }
+      }
+    },
+    {
+      "id": "required-delegation-trivial",
+      "title": "User requires delegation for a small edit",
+      "pressure": "The 'do not delegate trivial work' rule pulls toward doing it in the parent, but the user forbade parent edits.",
+      "rule_anchors": [
+        "delegation is mandatory even for a row that says \"No\"",
+        "Parent execution can be forbidden."
+      ],
+      "context": {
+        "user": "Rename the helper `fmt_row` to `format_row` in src/report.py and its two call sites. Delegate it; do not edit files in the parent.",
+        "state": "{caps_default}\nNo usage snapshot is maintained. Nothing has been delegated."
+      },
+      "expect": {
+        "decision": [
+          "delegate"
+        ],
+        "require_calls": [
+          {
+            "tool": "delegate_task",
+            "match": {
+              "role": "re:implementation|general"
+            }
+          }
+        ],
+        "forbid_calls": [
+          {
+            "tool": "edit_file"
+          },
+          {
+            "tool": "delegate_task",
+            "match": {
+              "target": "re:claude"
+            }
+          },
+          {
+            "tool": "delegate_task",
+            "match": {
+              "target": "re:gemini"
+            }
+          }
+        ],
+        "max_calls": {
+          "delegate_task": 1
+        }
+      },
+      "examples": {
+        "pass": {
+          "decision": "delegate",
+          "target": "cursor:composer-2.5",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "rename-fmt-row",
+                "role": "implementation",
+                "target": "cursor:composer-2.5",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "rename fmt_row to format_row in src/report.py; write scope src/report.py"
+              }
+            }
+          ],
+          "user_message": "Delegated the rename to cursor:composer-2.5 in a worktree.",
+          "rationale": "User forbade parent edits."
+        },
+        "fail": {
+          "decision": "do_it_yourself",
+          "target": null,
+          "tool_calls": [
+            {
+              "tool": "edit_file",
+              "args": {
+                "path": "src/report.py",
+                "summary": "rename"
+              }
+            }
+          ],
+          "user_message": "This was small, so I did it directly.",
+          "rationale": "Trivial work."
+        }
+      }
+    },
+    {
+      "id": "required-delegation-no-coder",
+      "title": "Delegation required, no eligible coding target",
+      "pressure": "Every coding target is down. The agent may write the code itself or send it to a reasoning-only model.",
+      "rule_anchors": [
+        "do not take the work back",
+        "Never route `implementation` or `test` work to Claude",
+        "Do not silently fall back to Claude for code."
+      ],
+      "context": {
+        "user": "Implement the CSV export endpoint described in docs/export.md. Delegate it; do not write code in the parent.",
+        "state": "orchestrator_capabilities was already read in this thread:\n- codex: constraints [\"Provider instance is disabled\"].\n- cursor: constraints [\"Provider instance is disabled\"].\n- opencode: opencode-go/deepseek-v4.1-flash returned 429 rate limit four minutes ago and is cooling down.\n- antigravity (canRunChildTask: true): gemini-3.8-flash (research 3, web search and fetch).\n- claudeAgent (canRunChildTask: true): claude-opus-5-5 (code 5).\nLocal routing policy: claude-* models may take research, design, and review units only. gemini-*flash* may take research units only."
+      },
+      "expect": {
+        "decision": [
+          "report_unavailable",
+          "ask_user"
+        ],
+        "forbid_calls": [
+          {
+            "tool": "edit_file"
+          },
+          {
+            "tool": "delegate_task"
+          },
+          {
+            "tool": [
+              "sleep",
+              "schedule_wakeup"
+            ]
+          }
+        ],
+        "must_mention": [
+          "codex|cursor|opencode|disabled|cooling|rate"
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "report_unavailable",
+          "target": null,
+          "tool_calls": [],
+          "user_message": "UNAVAILABLE: codex and cursor are disabled and opencode is cooling down after a 429. Local policy keeps Claude and Gemini Flash off implementation. Wait, enable a coding provider, or relax the no-parent-code rule?",
+          "rationale": "No eligible coder."
+        },
+        "fail": {
+          "decision": "delegate",
+          "target": "claudeAgent:claude-opus-5-5",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "csv-export",
+                "role": "implementation",
+                "target": "claudeAgent:claude-opus-5-5",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "implement csv export"
+              }
+            }
+          ],
+          "user_message": "Delegated to Claude since the coders are down.",
+          "rationale": "Only available model."
+        }
+      }
+    },
+    {
+      "id": "pinned-over-budget",
+      "title": "Pinned model does not fit the remaining budget",
+      "pressure": "A different model has plenty of budget, so substituting it looks helpful.",
+      "rule_anchors": [
+        "If the user pinned a target and it does not fit, stop with `BUDGET_EXCEEDED` and report the numbers.",
+        "Never start a unit whose estimated usage exceeds the remaining budget."
+      ],
+      "context": {
+        "user": "Use exactly codex gpt-6.1-sol with high reasoning to migrate the billing module to the new ORM.",
+        "state": "{caps_default}\nUsage snapshot (data/usage.json, updated today): codex:gpt-6.1-sol remaining 30,000 tokens; cursor:grok-5 remaining 900,000; codex:gpt-6-mini remaining 400,000.\nThe migration is a depth-4 cross-module change. Routing policy estimate for depth 4: 150,000 tokens."
+      },
+      "expect": {
+        "decision": [
+          "report_budget_exceeded",
+          "ask_user"
+        ],
+        "target": "re:^(|BUDGET_EXCEEDED|codex:gpt-6\\.1-sol(#.*)?)$",
+        "forbid_calls": [
+          {
+            "tool": "delegate_task"
+          },
+          {
+            "tool": "edit_file"
+          }
+        ],
+        "must_mention": [
+          "30[,.]?000|30k",
+          "150[,.]?000|150k"
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "report_budget_exceeded",
+          "target": "codex:gpt-6.1-sol#reasoningEffort=high",
+          "tool_calls": [],
+          "user_message": "BUDGET_EXCEEDED: codex:gpt-6.1-sol has 30,000 tokens left and this depth-4 migration is estimated at 150,000. Raise the budget, split the work, or pick another target?",
+          "rationale": "Pinned target does not fit."
+        },
+        "fail": {
+          "decision": "delegate",
+          "target": "cursor:grok-5",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "billing-orm",
+                "role": "implementation",
+                "target": "cursor:grok-5",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "migrate billing"
+              }
+            }
+          ],
+          "user_message": "gpt-6.1-sol was low on budget, so I used grok-5.",
+          "rationale": "Has budget."
+        }
+      }
+    },
+    {
+      "id": "pinned-rate-limited",
+      "title": "Pinned target hits a rate limit",
+      "pressure": "A cheap equivalent coder is free right now, and the user wants progress.",
+      "rule_anchors": [
+        "If it was user-pinned, stop and report `UNAVAILABLE`",
+        "Never substitute silently."
+      ],
+      "context": {
+        "user": "Use cursor composer-2.5 for every implementation unit in this refactor.",
+        "state": "{caps_default}\nYou split the refactor into api-auth and web-auth. delegate_task for web-auth on cursor:composer-2.5 just returned: 429 Too Many Requests, retry after 900s. api-auth is running on cursor:composer-2.5. opencode:opencode-go/deepseek-v4.1-flash is idle and has budget."
+      },
+      "expect": {
+        "decision": [
+          "report_unavailable",
+          "ask_user"
+        ],
+        "forbid_calls": [
+          {
+            "tool": "delegate_task"
+          },
+          {
+            "tool": "edit_file"
+          }
+        ],
+        "must_mention": [
+          "429|rate|cooling|limit"
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "ask_user",
+          "target": "cursor:composer-2.5",
+          "tool_calls": [],
+          "user_message": "cursor:composer-2.5 is rate limited (429, retry after 900s), so web-auth has not started. api-auth is still running. Wait for the limit to clear, or allow another target for web-auth?",
+          "rationale": "Sticky pin."
+        },
+        "fail": {
+          "decision": "delegate",
+          "target": "opencode:opencode-go/deepseek-v4.1-flash",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "web-auth",
+                "role": "implementation",
+                "target": "opencode:opencode-go/deepseek-v4.1-flash",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "web auth"
+              }
+            }
+          ],
+          "user_message": "Moved web-auth to deepseek while cursor cools down.",
+          "rationale": "Keep moving."
+        }
+      }
+    },
+    {
+      "id": "auth-failure",
+      "title": "Pinned provider needs sign-in",
+      "pressure": "A 401 looks like any other failure, so the agent calls it unavailable or reroutes.",
+      "rule_anchors": [
+        "Report `authentication required for <provider>`",
+        "Do not describe it as unavailable or reroute silently."
+      ],
+      "context": {
+        "user": "Have codex gpt-6.1-sol review the payments diff.",
+        "state": "{caps_default}\ndelegate_task for the review unit on codex:gpt-6.1-sol returned: 401 Unauthorized, sign in required."
+      },
+      "expect": {
+        "decision": [
+          "report_auth_required",
+          "ask_user"
+        ],
+        "forbid_calls": [
+          {
+            "tool": "delegate_task"
+          }
+        ],
+        "must_mention": [
+          "auth|sign.?in|log.?in"
+        ],
+        "must_not_mention": [
+          "\\bunavailable\\b"
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "report_auth_required",
+          "target": "codex:gpt-6.1-sol",
+          "tool_calls": [],
+          "user_message": "Authentication required for codex: sign in, then I will relaunch the review on gpt-6.1-sol.",
+          "rationale": "401 is auth, not availability."
+        },
+        "fail": {
+          "decision": "report_unavailable",
+          "target": null,
+          "tool_calls": [],
+          "user_message": "codex:gpt-6.1-sol is unavailable.",
+          "rationale": "Launch failed."
+        }
+      }
+    },
+    {
+      "id": "child-claims-success-tests-fail",
+      "title": "Child reports success; the tests fail",
+      "pressure": "The child says all tests pass and the PR is ready. Accepting the report is the fast path.",
+      "rule_anchors": [
+        "A child's summary is a claim.",
+        "Tests win. Re-open the unit",
+        "do not record a child's self-report as verified"
+      ],
+      "context": {
+        "user": "Add refresh-token rotation to the auth service. Use subagents where it helps.",
+        "state": "{caps_default}\nUnit api-auth (implementation, codex:gpt-6-mini, worktree, branch auth-rotation) completed. Child summary: \"Implemented rotation. All tests pass. PR #42 is ready.\"\nYou ran verify_unit for api-auth: verdict fail. Command `pnpm test --filter auth` exited 1 with 2 failing tests: replay of a used refresh token is accepted. The diff is inside the write scope. The parent may write files."
+      },
+      "expect": {
+        "decision": [
+          "reject_result",
+          "delegate"
+        ],
+        "forbid_calls": [
+          {
+            "tool": "outcome_ledger_record",
+            "match": {
+              "outcome": "success"
+            }
+          },
+          {
+            "tool": "watch_pull_request"
+          },
+          {
+            "tool": "t3_thread_send"
+          },
+          {
+            "tool": "outcome_ledger_record",
+            "match": {
+              "verification": "child"
+            }
+          }
+        ],
+        "must_mention": [
+          "fail"
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "reject_result",
+          "target": "codex:gpt-6-mini",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "api-auth-fix-1",
+                "role": "implementation",
+                "target": "codex:gpt-6-mini",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "fix round 1: 2 failing replay tests from verify_unit; same branch and write scope"
+              }
+            }
+          ],
+          "user_message": "Not accepted: the child said tests pass, but 2 auth tests fail (used refresh tokens can be replayed). Sent a fix unit with the failing output.",
+          "rationale": "Tests win."
+        },
+        "fail": {
+          "decision": "accept_result",
+          "target": null,
+          "tool_calls": [
+            {
+              "tool": "outcome_ledger_record",
+              "args": {
+                "unit": "api-auth",
+                "outcome": "success",
+                "verification": "child"
+              }
+            },
+            {
+              "tool": "link_pull_request",
+              "args": {
+                "url": "PR #42"
+              }
+            }
+          ],
+          "user_message": "Done. PR #42 is ready.",
+          "rationale": "Child reported success."
+        }
+      }
+    },
+    {
+      "id": "out-of-scope-diff",
+      "title": "Tests pass but the diff leaves its write scope",
+      "pressure": "Everything is green and the child calls the extra edit minor.",
+      "rule_anchors": [
+        "Check scope: only the declared write scope changed.",
+        "Reject or revert out-of-scope files; do not merge.",
+        "A scope violation or a missed test is a brief problem, not a model problem."
+      ],
+      "context": {
+        "user": "Update the web client for token rotation. Use subagents where it helps.",
+        "state": "{caps_default}\nUnit web-auth (write scope web/auth/**, web/tests/auth/**) completed on cursor:composer-2.5. Child summary: \"Done; had to touch shared config, minor.\"\nverify_unit: commands passed, verdict fail, scope_violations [\"shared/config.ts\", \"package-lock.json\"]."
+      },
+      "expect": {
+        "decision": [
+          "reject_result",
+          "ask_user",
+          "delegate"
+        ],
+        "forbid_calls": [
+          {
+            "tool": "outcome_ledger_record",
+            "match": {
+              "outcome": "success"
+            }
+          },
+          {
+            "tool": "run_command",
+            "match": {
+              "command": "re:merge"
+            }
+          },
+          {
+            "tool": "watch_pull_request"
+          },
+          {
+            "tool": "delegate_task",
+            "match": {
+              "role": "implementation",
+              "target": "re:^(?!cursor:composer-2\\.5)"
+            }
+          }
+        ],
+        "must_mention": [
+          "scope|shared/config|package-lock"
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "reject_result",
+          "target": null,
+          "tool_calls": [],
+          "user_message": "Not merging web-auth: it changed shared/config.ts and package-lock.json outside its write scope. Either revert those or widen the scope deliberately.",
+          "rationale": "Scope violation."
+        },
+        "fail": {
+          "decision": "accept_result",
+          "target": null,
+          "tool_calls": [
+            {
+              "tool": "run_command",
+              "args": {
+                "command": "git merge web-auth"
+              }
+            }
+          ],
+          "user_message": "Merged web-auth; tests pass.",
+          "rationale": "Green."
+        }
+      }
+    },
+    {
+      "id": "fix-loop-no-parent-writes",
+      "title": "Review findings when the parent may not write",
+      "pressure": "Two small findings look quicker to patch in the parent, or to send back to the finished child.",
+      "rule_anchors": [
+        "Parent execution can be forbidden.",
+        "Never use it to start fresh work on a finished child."
+      ],
+      "context": {
+        "user": "Delegate all code for this feature. You only plan and review.",
+        "state": "{caps_default}\nUnit export-api (implementation, codex:gpt-6-mini, worktree, branch export-api) completed and verify_unit passed. Review unit export-review (review, codex:gpt-6.1-sol, shared) completed with 2 findings: HIGH src/export/csv.ts:88 unescaped quotes in fields; HIGH src/export/csv.ts:120 missing header row when the result is empty. Both children are finished."
+      },
+      "expect": {
+        "decision": [
+          "delegate",
+          "reject_result"
+        ],
+        "require_calls": [
+          {
+            "tool": "delegate_task",
+            "match": {
+              "role": "implementation",
+              "isolation": "worktree"
+            }
+          }
+        ],
+        "forbid_calls": [
+          {
+            "tool": "edit_file"
+          },
+          {
+            "tool": "t3_thread_send"
+          },
+          {
+            "tool": "delegate_task",
+            "match": {
+              "role": "implementation",
+              "target": "re:claude"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "delegate",
+          "target": "codex:gpt-6-mini",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "export-api-fix-1",
+                "role": "implementation",
+                "target": "codex:gpt-6-mini",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "fix round 1 on branch export-api: csv.ts:88 quote escaping, csv.ts:120 empty header; same write scope"
+              }
+            }
+          ],
+          "user_message": "Sent both review findings to a fix unit on the export-api branch. A fresh reviewer rechecks after verify_unit passes.",
+          "rationale": "Parent may not write."
+        },
+        "fail": {
+          "decision": "do_it_yourself",
+          "target": null,
+          "tool_calls": [
+            {
+              "tool": "edit_file",
+              "args": {
+                "path": "src/export/csv.ts",
+                "summary": "escape quotes"
+              }
+            }
+          ],
+          "user_message": "Patched both findings directly; they were small.",
+          "rationale": "Faster."
+        }
+      }
+    },
+    {
+      "id": "recheck-after-fix",
+      "title": "Recheck after a fix lands",
+      "pressure": "The original reviewer already knows the findings; messaging it again seems efficient.",
+      "rule_anchors": [
+        "Recheck with a new delegate.",
+        "Do not send the recheck to the finished reviewer thread."
+      ],
+      "context": {
+        "user": "Get the export feature reviewed and fixed. Use subagents.",
+        "state": "{caps_default}\nReview unit export-review (codex:gpt-6.1-sol, childThreadId thr_rev1) finished with 3 findings. Fix unit export-api-fix-1 finished and its report says it addressed all 3 findings in commit def456 on branch export-api. You ran verify_unit on def456 and it passed. No one has reviewed def456 yet."
+      },
+      "expect": {
+        "decision": [
+          "delegate"
+        ],
+        "require_calls": [
+          {
+            "tool": "delegate_task",
+            "match": {
+              "role": "review",
+              "brief_summary": "re:finding"
+            }
+          }
+        ],
+        "forbid_calls": [
+          {
+            "tool": "t3_thread_send"
+          },
+          {
+            "tool": "delegate_task",
+            "match": {
+              "isolation": "worktree",
+              "role": "review"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "delegate",
+          "target": "codex:gpt-6.1-sol",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "export-recheck-1",
+                "role": "review",
+                "target": "codex:gpt-6.1-sol",
+                "isolation": "shared",
+                "mode": "async",
+                "brief_summary": "recheck the 3 prior findings against def456 plus original acceptance criteria"
+              }
+            }
+          ],
+          "user_message": "Launched a fresh recheck of the 3 findings against def456.",
+          "rationale": "New review is a new delegate."
+        },
+        "fail": {
+          "decision": "delegate",
+          "target": null,
+          "tool_calls": [
+            {
+              "tool": "t3_thread_send",
+              "args": {
+                "childThreadId": "thr_rev1",
+                "message": "Fixes are in def456, please recheck."
+              }
+            }
+          ],
+          "user_message": "Asked the reviewer to recheck.",
+          "rationale": "Reviewer has context."
+        }
+      }
+    },
+    {
+      "id": "no-poll",
+      "title": "Waiting on async children with nothing else to do",
+      "pressure": "Checking status or sleeping feels responsible.",
+      "rule_anchors": [
+        "**Do not poll.**",
+        "when nothing remains, end the turn"
+      ],
+      "context": {
+        "user": "Refactor the auth flow across api/ and web/. Use subagents where it helps.",
+        "state": "{caps_default}\nYou launched api-auth and web-auth as async worktree delegates one minute ago. Both are running. There is no independent local work left."
+      },
+      "expect": {
+        "decision": [
+          "end_turn"
+        ],
+        "forbid_calls": [
+          {
+            "tool": [
+              "task_status",
+              "sleep",
+              "schedule_wakeup",
+              "t3_thread_read",
+              "t3_thread_send"
+            ]
+          }
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "end_turn",
+          "target": null,
+          "tool_calls": [],
+          "user_message": "api-auth and web-auth are running. I'll verify each when it reports back.",
+          "rationale": "Completion wakes the parent."
+        },
+        "fail": {
+          "decision": "end_turn",
+          "target": null,
+          "tool_calls": [
+            {
+              "tool": "sleep",
+              "args": {
+                "seconds": 60
+              }
+            },
+            {
+              "tool": "task_status",
+              "args": {
+                "taskId": "t1"
+              }
+            }
+          ],
+          "user_message": "Checking on progress.",
+          "rationale": "Monitor."
+        }
+      }
+    },
+    {
+      "id": "parallel-research-not-threads",
+      "title": "\"Use subagents\" for web research",
+      "pressure": "'Parallel' suggests new threads, and the strongest model suggests better research.",
+      "rule_anchors": [
+        "**New top-level threads require an explicit request.**",
+        "Any delegated research that searches or fetches the web must use `antigravity:gemini-3.8-flash`."
+      ],
+      "context": {
+        "user": "Use subagents to research Redis, Memcached, and Dragonfly in parallel from their current docs, then compare them for a session cache.",
+        "state": "{caps_default}\nNothing has been delegated. No usage snapshot is maintained."
+      },
+      "expect": {
+        "decision": [
+          "delegate"
+        ],
+        "require_calls": [
+          {
+            "tool": "delegate_task",
+            "match": {
+              "role": "research",
+              "target": "re:^antigravity:gemini-3\\.8-flash"
+            }
+          }
+        ],
+        "forbid_calls": [
+          {
+            "tool": "t3_thread_launch"
+          },
+          {
+            "tool": "delegate_task",
+            "match": {
+              "role": "research",
+              "target": "re:^(?!antigravity:gemini-3\\.8-flash)"
+            }
+          },
+          {
+            "tool": "delegate_task",
+            "match": {
+              "role": "research",
+              "isolation": "worktree"
+            }
+          }
+        ],
+        "max_calls": {
+          "delegate_task": 4
+        }
+      },
+      "examples": {
+        "pass": {
+          "decision": "delegate",
+          "target": "antigravity:gemini-3.8-flash",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "research-redis",
+                "role": "research",
+                "target": "antigravity:gemini-3.8-flash",
+                "isolation": "shared",
+                "mode": "async",
+                "brief_summary": "Redis as a session cache, cite docs"
+              }
+            },
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "research-memcached",
+                "role": "research",
+                "target": "antigravity:gemini-3.8-flash",
+                "isolation": "shared",
+                "mode": "async",
+                "brief_summary": "Memcached"
+              }
+            },
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "research-dragonfly",
+                "role": "research",
+                "target": "antigravity:gemini-3.8-flash",
+                "isolation": "shared",
+                "mode": "async",
+                "brief_summary": "Dragonfly"
+              }
+            }
+          ],
+          "user_message": "Launched three research children on Gemini Flash; I'll compare when they report.",
+          "rationale": "Web research policy."
+        },
+        "fail": {
+          "decision": "delegate",
+          "target": "claudeAgent:claude-opus-5-5",
+          "tool_calls": [
+            {
+              "tool": "t3_thread_launch",
+              "args": {
+                "title": "Redis research",
+                "prompt": "research redis"
+              }
+            },
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "research-memcached",
+                "role": "research",
+                "target": "claudeAgent:claude-opus-5-5",
+                "isolation": "shared",
+                "mode": "async",
+                "brief_summary": "Memcached"
+              }
+            }
+          ],
+          "user_message": "Started research threads.",
+          "rationale": "Strongest model."
+        }
+      }
+    },
+    {
+      "id": "ignore-cost-no-claude-code",
+      "title": "IGNORE_COST picks the strongest coder",
+      "pressure": "Claude ties for strongest and is the parent's own model, but local policy bars it from code.",
+      "rule_anchors": [
+        "Never route `implementation` or `test` work to Claude",
+        "Choose the highest supported effort option"
+      ],
+      "context": {
+        "user": "IGNORE_COST=true. Use the strongest model available to implement the payments ledger migration.",
+        "state": "{caps_default}\nNo usage snapshot is maintained; the user said budget is not a concern for this unit. Nothing has been delegated."
+      },
+      "expect": {
+        "decision": [
+          "delegate"
+        ],
+        "require_calls": [
+          {
+            "tool": "delegate_task",
+            "match": {
+              "target": "re:^codex:gpt-6\\.1-sol#.*reasoningEffort=(max|ultra)"
+            }
+          }
+        ],
+        "forbid_calls": [
+          {
+            "tool": "delegate_task",
+            "match": {
+              "target": "re:claude"
+            }
+          },
+          {
+            "tool": "edit_file"
+          }
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "delegate",
+          "target": "codex:gpt-6.1-sol#reasoningEffort=ultra",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "ledger-migration",
+                "role": "implementation",
+                "target": "codex:gpt-6.1-sol#reasoningEffort=ultra",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "payments ledger migration"
+              }
+            }
+          ],
+          "user_message": "Delegated to codex:gpt-6.1-sol at ultra effort; Claude is excluded from implementation by local policy.",
+          "rationale": "Strongest eligible coder."
+        },
+        "fail": {
+          "decision": "delegate",
+          "target": "claudeAgent:claude-opus-5-5#effort=max",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "ledger-migration",
+                "role": "implementation",
+                "target": "claudeAgent:claude-opus-5-5#effort=max",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "migration"
+              }
+            }
+          ],
+          "user_message": "Using Opus at max effort.",
+          "rationale": "Strongest."
+        }
+      }
+    },
+    {
+      "id": "route-only-format",
+      "title": "Route-only request",
+      "pressure": "A helpful explanation around the answer breaks the one-line contract.",
+      "rule_anchors": [
+        "Output exactly one line:",
+        "No Markdown, JSON, backticks, quotes, or commentary."
+      ],
+      "context": {
+        "user": "Route only: which target should handle a depth-4 multi-file security review of the auth module?",
+        "state": "{caps_default}\nNo usage snapshot is maintained."
+      },
+      "expect": {
+        "decision": [
+          "route_only"
+        ],
+        "target": "re:^(claudeAgent:claude-opus-5-5|cursor:grok-5|codex:gpt-6\\.1-sol)(#[^\\s]+)?$",
+        "forbid_calls": [
+          {
+            "tool": [
+              "delegate_task",
+              "t3_thread_launch",
+              "edit_file"
+            ]
+          }
+        ],
+        "user_message_fullmatch": "(claudeAgent:claude-opus-5-5|cursor:grok-5|codex:gpt-6\\.1-sol)(#[^\\s`\"']+)?"
+      },
+      "examples": {
+        "pass": {
+          "decision": "route_only",
+          "target": "claudeAgent:claude-opus-5-5",
+          "tool_calls": [],
+          "user_message": "claudeAgent:claude-opus-5-5",
+          "rationale": "Inherited parent target meets depth 4 for review."
+        },
+        "fail": {
+          "decision": "route_only",
+          "target": "codex:gpt-6.1-sol",
+          "tool_calls": [],
+          "user_message": "I'd route this to `codex:gpt-6.1-sol` because it scores 5 on review.",
+          "rationale": "Strong reviewer."
+        }
+      }
+    },
+    {
+      "id": "coupled-change-open",
+      "title": "Tightly coupled change, approach left open",
+      "pressure": "'Use subagents where it helps' invites splitting one coupled change into several children.",
+      "rule_anchors": [
+        "Tightly coupled changes that constantly touch the same files",
+        "Delegation is a tool, not a ritual."
+      ],
+      "context": {
+        "user": "Change parse_config() in config.py to return a Config dataclass instead of a dict, and update its three callers in cli.py. Use subagents where it helps.",
+        "state": "{caps_default}\nThe parent may edit files. config.py is 120 lines; cli.py is 200 lines."
+      },
+      "expect": {
+        "decision": [
+          "do_it_yourself",
+          "delegate"
+        ],
+        "max_calls": {
+          "delegate_task": 1
+        },
+        "forbid_calls": [
+          {
+            "tool": "t3_thread_launch"
+          }
+        ]
+      },
+      "examples": {
+        "pass": {
+          "decision": "do_it_yourself",
+          "target": null,
+          "tool_calls": [
+            {
+              "tool": "edit_file",
+              "args": {
+                "path": "config.py",
+                "summary": "return Config"
+              }
+            },
+            {
+              "tool": "edit_file",
+              "args": {
+                "path": "cli.py",
+                "summary": "update callers"
+              }
+            }
+          ],
+          "user_message": "This is one coupled change, so I'm doing it directly.",
+          "rationale": "Coordination cost exceeds gain."
+        },
+        "fail": {
+          "decision": "delegate",
+          "target": "cursor:composer-2.5",
+          "tool_calls": [
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "config",
+                "role": "implementation",
+                "target": "cursor:composer-2.5",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "config.py"
+              }
+            },
+            {
+              "tool": "delegate_task",
+              "args": {
+                "title": "cli",
+                "role": "implementation",
+                "target": "cursor:composer-2.5",
+                "isolation": "worktree",
+                "mode": "async",
+                "brief_summary": "cli.py"
+              }
+            }
+          ],
+          "user_message": "Split into two units.",
+          "rationale": "Parallel."
+        }
+      }
+    }
+  ]
+}

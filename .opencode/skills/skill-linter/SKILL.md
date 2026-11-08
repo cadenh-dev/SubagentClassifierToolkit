@@ -1,6 +1,6 @@
 ---
 name: skill-linter
-description: Validate Agent Skills before install or after editing. Use when creating, reviewing, or installing a skill and you need a deterministic read-only check of frontmatter, name and directory agreement, description length, local links, Python helper syntax, secrets, or leaked user paths.
+description: Use when creating, editing, reviewing, or installing an Agent Skill and you need a deterministic read-only check of frontmatter, name and directory agreement, description length, local links, Python helper syntax, secrets, or leaked user paths.
 ---
 
 # Skill Linter

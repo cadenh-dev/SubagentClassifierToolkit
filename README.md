@@ -44,6 +44,17 @@ cp -R /path/to/SubagentClassifierToolkit/.opencode/skills/* ~/.config/opencode/s
 
 Skill names match their directories: `subagent-orchestrator`, `project-classifier`, and `skill-linter`.
 
+### Bootstrap (optional)
+
+An agent loads a skill only when it decides the skill's description fits the task. To make the orchestrator load reliably, add the delegation check to the project's `AGENTS.md`:
+
+```bash
+python3 .opencode/skills/subagent-orchestrator/scripts/install_bootstrap.py --project /path/to/repo
+python3 .opencode/skills/subagent-orchestrator/scripts/install_bootstrap.py --project /path/to/repo --check
+```
+
+The snippet ([`assets/bootstrap.md`](.opencode/skills/subagent-orchestrator/assets/bootstrap.md)) lists when to load the skill and says to do the work directly otherwise, so it does not push agents toward delegating small tasks. Re-running updates it in place; `--file CLAUDE.md` targets Claude Code; `--remove` takes it out.
+
 ## Use
 
 Ask for the outcome, not the mechanism:
@@ -154,7 +165,29 @@ python3 .opencode/skills/subagent-orchestrator/scripts/record_verification.py \
   --retries 0 --review-findings 1
 ```
 
+### Fix loop
+
+Phase 7 runs three gates on each unit as soon as it reports back: the machine check (`verify_unit.py`), a spec check against the acceptance criteria, and a quality review (a fresh review child at depth 3 or more). A failed gate starts a fix round: a new delegate on the unit's branch, with a brief built from the evidence:
+
+```bash
+python3 .opencode/skills/subagent-orchestrator/scripts/fix_brief.py   --plan plan.json --unit api-auth --report verify.json --findings review.json --round 1
+```
+
+The brief carries the failing commands with the tail of their output, any out-of-scope paths, and the review findings. Token-shaped values are redacted. After a fix the unit restarts at the machine check. After two rounds `fix_brief.py` exits 1, and the parent escalates to the user instead of retrying.
+
 For linked Git worktrees, pass `--expected-git-dir` and `--expected-git-common-dir` from the trusted parent. Git preflight ignores inherited `GIT_*` overrides and disables repository `core.fsmonitor` hooks. The plan is loaded and validated as one snapshot; the harness reports post-command working-tree state and fails if a command moves `HEAD`.
+
+## Skill-text evals
+
+The tests prove the scripts work; [`evals/`](evals/) checks the skill text itself. Pressure scenarios (a pinned target over budget, a child claiming success while tests fail, a rate-limited pin, no eligible coder, and more) go to any agent CLI with and without `SKILL.md`. A deterministic grader scores the reply. A trigger suite checks whether the skill loads at all.
+
+```bash
+python3 evals/run_skill_evals.py run --cmd "claude -p --model haiku --tools ''" --trials 3
+python3 evals/run_skill_evals.py run --cmd "claude -p --model haiku --tools ''" --trials 3 --baseline
+python3 evals/run_skill_evals.py triggers --cmd "claude -p --model haiku --tools ''"
+```
+
+Live runs cost tokens and stay out of CI. CI checks the grader against each scenario's examples, and checks that every rule a scenario depends on is still in `SKILL.md`. Results and how to write a scenario are in [`evals/README.md`](evals/README.md).
 
 ## Project classifier
 
@@ -202,6 +235,7 @@ It validates frontmatter, name/directory agreement, description length, local li
 │   ├── operations.md            # launch, supervise, verify, integrate
 │   └── outcomes.md              # outcome-ledger schema and evidence rules
 ├── assets/
+│   ├── bootstrap.md             # AGENTS.md delegation check
 │   ├── brief-template.md        # copy-paste brief
 │   ├── plan.example.json        # example delegation plan
 │   └── plan.schema.json         # delegation plan contract
@@ -210,6 +244,8 @@ It validates frontmatter, name/directory agreement, description length, local li
     ├── validate_plan.py         # plan and dependency validator
     ├── verify_unit.py           # bounded command + write-scope verifier
     ├── record_verification.py   # reviewed verification report → ledger record
+    ├── fix_brief.py             # fix-round brief from a failing report and findings
+    ├── install_bootstrap.py     # adds the delegation check to AGENTS.md
     └── outcome_ledger.py        # append-only outcome records and summaries
 .opencode/skills/project-classifier/
 ├── SKILL.md                     # project-classifier workflow
@@ -227,7 +263,13 @@ tests/
 ├── test_skill_linter.py         # skill-linter tests
 ├── test_outcome_ledger.py       # outcome-ledger tests
 ├── test_verify_unit.py          # verification-harness tests
-└── test_record_verification.py  # verification-to-ledger bridge tests
+├── test_record_verification.py  # verification-to-ledger bridge tests
+├── test_fix_brief.py            # fix-round brief tests
+├── test_install_bootstrap.py    # bootstrap installer tests
+└── test_skill_evals.py          # eval grader, anchors, descriptions (no model calls)
+evals/
+├── run_skill_evals.py           # scenario + trigger runner and grader
+└── subagent-orchestrator/       # scenarios.json, triggers.json
 docs/
 ├── requirements.md              # requirement-to-implementation mapping
 └── roadmap.md                   # other useful toolkit pieces
@@ -242,7 +284,7 @@ docs/
 5. **Max reasoning is explicit.** `IGNORE_COST=true` raises the effort and chooses the strongest available target. It does not ignore availability or remaining usage.
 6. **One brief per independent unit.** Each child gets a self-contained task, write scope, acceptance criteria, and reporting contract.
 7. **Worktree for writes, shared for read-only.** Any child that writes uses a worktree by default; worktrees come from delegate isolation, not shell setup in the brief. A parent-checkout edit requires a direct user instruction and explicit scope confirmation.
-8. **Verify, don't trust.** A child's summary is a claim; the parent reads the diff and runs the checks. The outcome ledger records whether verification actually happened.
+8. **Verify, don't trust.** A child's summary is a claim; the parent reads the diff and runs the checks. Each unit passes a machine check, a spec check, and a review before it is accepted; failures go to a bounded fix loop. The outcome ledger records whether verification actually happened.
 9. **No nested delegation by default.** A child does the work itself unless the brief explicitly allows otherwise.
 10. **User scope wins over defaults.** If the user requires delegation or forbids parent coding, an unavailable target is reported and questioned, not quietly replaced by parent implementation. A user-pinned target is used exactly or reported as unavailable/over-budget/conflicted. Hard local policy gates are surfaced, not silently bypassed.
 

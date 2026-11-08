@@ -233,6 +233,40 @@ python3 scripts/record_verification.py --report verify.json \
   --retries 0 --review-findings 1
 ```
 
+## 8a. Fix loop and review cadence
+
+Phase 7 runs three gates per unit, in order, as soon as the unit reports back:
+
+| Gate | What runs | Who | On failure |
+|---|---|---|---|
+| 1. Machine check | `verify_unit.py`: declared commands and write scope | parent | fix round; skip gates 2–3 |
+| 2. Spec check | diff against each acceptance criterion | parent; review child at depth 4–5 | fix round |
+| 3. Quality review | fresh review child (depth >= 3 or security-sensitive); parent reads the diff at depth 1–2 | child or parent | fix round, then recheck |
+
+Rules:
+
+- **Cheapest gate first.** Never pay for a review of a unit whose tests fail.
+- **Spec before quality.** Polishing code that does not meet the criteria is wasted work.
+- **Per unit, not per batch.** Review each unit when it lands. A dependent unit starts only after its upstream unit is accepted.
+- **A fix round is a new `delegate_task`** on the unit's branch with the same role and write scope. Build the brief with `scripts/fix_brief.py` (see [briefs.md](briefs.md#fix-round)).
+- **Restart at Gate 1 after every fix**, then rerun every gate from the one that failed onward. Review findings are rechecked by a fresh review child, never by messaging the finished reviewer.
+- **Two fix rounds, then escalate.** `fix_brief.py` exits 1 past `--max-rounds`. Report what failed, what was tried, and the current diff; let the user choose to raise the target, re-split, or change approach.
+- **Record the rounds.** Pass the number of fix rounds as `--retries` to `record_verification.py` or `outcome_ledger.py record`. A unit that needed rounds is evidence the depth or target was underrated.
+- **Final review of the combined diff** at depth 3 or more, after integration and the full suite.
+
+```text
+unit done -> verify_unit --fail--> fix_brief --round 1 -> delegate_task -> verify_unit ...
+              | pass
+              v
+           spec check --gap--> fix round (Gate 1 again)
+              | ok
+              v
+           review child --findings--> fix round -> Gate 1 -> Gate 2 -> recheck child
+              | approve
+              v
+           accept -> record_verification --retries N -> release dependents
+```
+
 ## 9. Integration checklist
 
 Before accepting a unit:
@@ -305,7 +339,7 @@ Do not cancel a child just because a wait timed out. It may still be working.
 5. Write one brief per unit.
 6. Launch worktree implementations and shared read-only research/review.
 7. Continue independent work; end the turn when nothing remains; do not poll.
-8. On wake: follow next; read status/result if directed; verify diff/tests.
+8. On wake: follow next; read status/result if directed; run the three gates (verify_unit, spec, review); fix rounds go to a new delegate, max two, then escalate.
 9. Integrate, link PRs, run full suite. Delegate integration if parent writes are forbidden.
 10. Record the outcome and report targets, units, tests, PRs, risks.
 ```

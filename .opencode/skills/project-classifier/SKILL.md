@@ -1,6 +1,6 @@
 ---
 name: project-classifier
-description: Inspect a repository, detect its real languages, frameworks, engines, build tools, and commands, and generate a project-local tool-router skill. Use when onboarding a repo, resolving competing toolchain candidates, choosing a test/build command, or refreshing a project classifier after a stack change.
+description: Use when onboarding a repository, when competing languages, engines, build tools, or package managers make the right command unclear, when choosing a build or test command, or when a project's tool router needs refreshing after a stack change.
 ---
 
 # Project Classifier

@@ -205,6 +205,41 @@ RULES
 - Do not assume a finding is fixed because the author said so.
 ```
 
+### Fix round
+
+A fix round is a new child on the unit's branch, not a message to the finished implementer. Generate it from the evidence instead of retyping it:
+
+```bash
+python3 scripts/fix_brief.py --plan plan.json --unit api-auth   --report verify.json --findings review.json --round 1
+```
+
+`--report` is a failing `verify_unit` report; `--findings` is the review or spec-check findings. The script takes the branch and head from the report (or `--branch` / `--head`), keeps the last lines of each failing command's output, redacts token-shaped values, and refuses past `--max-rounds` (default 2) so the parent escalates instead. The shape it produces:
+
+```text
+ROLE: implementation
+OBJECTIVE: Fix round 1 of 2 for unit api-auth: make it pass the problems listed below. Original objective: <objective>
+
+CONTEXT
+- Work on branch <branch>, starting from commit <head>. Commit your fixes on that branch and push it.
+- A previous child implemented this unit. Its report is not evidence; the problems below are.
+
+PROBLEMS TO FIX
+- `pnpm test --filter auth`: exit 1  (+ last lines of output)
+- Out of write scope: `shared/config.ts`. Revert this change; do not widen the scope yourself.
+- HIGH services/auth/rotate.ts:42: used refresh token is accepted
+
+WRITE SCOPE / ACCEPTANCE / COMMANDS  (same as the original unit)
+
+RULES
+- Fix only the problems listed. No unrelated cleanup or refactoring.
+- If a problem is wrong or cannot be fixed inside the write scope, say so and stop.
+
+REPORT
+- For each problem: fixed or not fixed, with file:line. Commands and results. New head SHA.
+```
+
+After the fix, the unit restarts at Gate 1. A fix that answered review findings also gets a review recheck (above).
+
 ### General
 
 Use `general` only when the task does not fit the other roles. State whether writes are allowed and give the same acceptance/reporting structure.
