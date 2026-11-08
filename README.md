@@ -2,11 +2,19 @@
 
 A T3 Code toolkit for deciding **when** to use subagents, **which** provider/model to use, **how** to deploy and supervise them, and **which project tools/languages** they should use.
 
-Three skills ship in the box:
+Eleven skills ship in the box:
 
-- [`subagent-orchestrator`](.opencode/skills/subagent-orchestrator/) — routing, briefs, supervision, verification, and an outcome ledger.
+- [`subagent-orchestrator`](.opencode/skills/subagent-orchestrator/) — routing, briefs, supervision, verification, multi-repo plans, a decision journal, and an outcome ledger.
 - [`project-classifier`](.opencode/skills/project-classifier/) — generates a project-local tool router from repository evidence.
 - [`skill-linter`](.opencode/skills/skill-linter/) — read-only packaging checks for Agent Skills.
+- [`toolkit-doctor`](.opencode/skills/toolkit-doctor/) — read-only health report: runtimes, agent CLIs, auth, git remote reachability, MCP server names, installed-skill drift.
+- [`repo-guardrails`](.opencode/skills/repo-guardrails/) — generates a managed `AGENTS.md` section from a project-classifier profile.
+- [`worktree-janitor`](.opencode/skills/worktree-janitor/) — finds stale worktrees, branches, and PRs; cleans up only confirmed, safe items.
+- [`benchmark-runner`](.opencode/skills/benchmark-runner/) — runs one fixed brief on several targets and compares verified, human-reviewed results.
+- [`secret-preflight`](.opencode/skills/secret-preflight/) — checks required credentials are available without reading values; scans tracked files for leaked secrets.
+- [`compat-matrix`](.opencode/skills/compat-matrix/) — joins live provider capabilities with sourced model constraints and filters eligible targets.
+- [`offpeak-scheduler`](.opencode/skills/offpeak-scheduler/) — runs DeepSeek work only in DeepSeek's off-peak (discounted) hours and defers it otherwise, with no polling.
+- [`session-kickoff`](.opencode/skills/session-kickoff/) — gives the main agent a role at thread start (planner, builder, reviewer, solo), saves it per project, and supplies the start-of-thread rule.
 
 The main skill is [`.opencode/skills/subagent-orchestrator/`](.opencode/skills/subagent-orchestrator/). It is not just a prompt that prints a model name. It is an operating procedure for:
 
@@ -221,6 +229,61 @@ python3 .opencode/skills/skill-linter/scripts/lint_skills.py .opencode/skills --
 
 It validates frontmatter, name/directory agreement, description length, local links, Python helper syntax, high-confidence secrets, and leaked absolute user paths. It never executes inspected code, imports inspected modules, fetches links, or writes files. Exit `0` means clean, `1` means errors (or warnings with `--strict`), and `2` means bad usage.
 
+## Operations skills
+
+```bash
+# Health check: tools, auth, remote reachability, MCP servers, installed-skill drift
+python3 .opencode/skills/toolkit-doctor/scripts/doctor.py --repo .
+
+# AGENTS.md guardrails from a project-classifier profile (--check for CI drift)
+python3 .opencode/skills/repo-guardrails/scripts/generate_agents_md.py \
+  --profile path/to/project-profile.json --repo . --check
+
+# Stale worktrees/branches/PRs (read-only), then confirmed cleanup by id
+python3 .opencode/skills/worktree-janitor/scripts/janitor.py scan --repo .
+python3 .opencode/skills/worktree-janitor/scripts/janitor.py clean --repo . --id wt:abc123 --apply
+
+# Credentials present? (never prints values; commands need --allow-commands)
+python3 .opencode/skills/secret-preflight/scripts/preflight.py check --manifest .agent-secrets.json
+python3 .opencode/skills/secret-preflight/scripts/preflight.py scan-repo --manifest .agent-secrets.json
+
+# Targets that meet requirements, from a saved orchestrator_capabilities snapshot
+python3 .opencode/skills/compat-matrix/scripts/compat_matrix.py filter \
+  --capabilities caps.json --require tool_calling,image_input --min-context 400000
+
+# Why was a target chosen? Record and query routing decisions
+python3 .opencode/skills/subagent-orchestrator/scripts/decision_journal.py record \
+  --from-select selection.json --unit api-auth
+python3 .opencode/skills/subagent-orchestrator/scripts/decision_journal.py show --unit api-auth
+```
+
+The benchmark runner is a plan generator and scorer; the parent agent launches each unit. Flow: `benchmark.py plan` → launch each unit → `score` → review → `compare` → `record`. See its [SKILL.md](.opencode/skills/benchmark-runner/SKILL.md).
+
+Multi-repo delegation plans add a top-level `repos` map, a per-unit `repo`, and an optional `integration.stack`. See [`references/multi-repo.md`](.opencode/skills/subagent-orchestrator/references/multi-repo.md).
+
+DeepSeek off-peak gating (times shown for America/Phoenix):
+
+```bash
+python3 .opencode/skills/offpeak-scheduler/scripts/offpeak.py gate --target deepseek:deepseek-v4.1-flash
+# exit 0 = run now, 3 = defer; then print a one-time wake instruction for the host:
+python3 .opencode/skills/offpeak-scheduler/scripts/offpeak.py schedule-hint --target deepseek:deepseek-v4.1-flash --host t3
+```
+
+The discount applies to DeepSeek's direct API (and OpenRouter's DeepSeek route). OpenCode Go and Zen have no time-of-day pricing, so their rules are opt-in (`--opt-in` or `OFFPEAK_OPT_IN=1`). Window data is unverified research; see the skill's `references/windows.md`.
+
+Thread and project roles:
+
+```bash
+python3 .opencode/skills/session-kickoff/scripts/kickoff.py set --preset planner --repo . --agents-md
+python3 .opencode/skills/session-kickoff/scripts/kickoff.py brief --repo .      # what the main agent adopts
+python3 .opencode/skills/session-kickoff/scripts/kickoff.py onboard --repo .    # new-project checklist
+python3 .opencode/skills/session-kickoff/scripts/kickoff.py install-rules --file ~/.claude/CLAUDE.md
+```
+
+Resolution order: `<repo>/.agent-role.json` > `~/.config/agent-role/default.json` > built-in `planner`. `install-rules` manages only its marked block in a global instruction file.
+
+The compatibility matrix's local data (`data/constraints.json`) is web research marked `verified: false`; live capabilities always win. Run `compat_matrix.py stale` to list entries that need a human re-check.
+
 ## What is in the box
 
 ```text
@@ -233,7 +296,9 @@ It validates frontmatter, name/directory agreement, description length, local li
 │   ├── routing.md               # depth, domains, pins, options, budget
 │   ├── briefs.md                # role templates, recheck brief, child rules
 │   ├── operations.md            # launch, supervise, verify, integrate
-│   └── outcomes.md              # outcome-ledger schema and evidence rules
+│   ├── outcomes.md              # outcome-ledger schema and evidence rules
+│   ├── decisions.md             # decision-journal schema
+│   └── multi-repo.md            # multi-repo plans and PR stacks
 ├── assets/
 │   ├── bootstrap.md             # AGENTS.md delegation check
 │   ├── brief-template.md        # copy-paste brief
@@ -246,6 +311,7 @@ It validates frontmatter, name/directory agreement, description length, local li
     ├── record_verification.py   # reviewed verification report → ledger record
     ├── fix_brief.py             # fix-round brief from a failing report and findings
     ├── install_bootstrap.py     # adds the delegation check to AGENTS.md
+    ├── decision_journal.py      # why a target was chosen; rejected alternatives
     └── outcome_ledger.py        # append-only outcome records and summaries
 .opencode/skills/project-classifier/
 ├── SKILL.md                     # project-classifier workflow
@@ -256,6 +322,12 @@ It validates frontmatter, name/directory agreement, description length, local li
 ├── SKILL.md                     # linter workflow and limits
 ├── references/checks.md         # diagnostic codes and YAML subset
 └── scripts/lint_skills.py       # read-only checker
+.opencode/skills/toolkit-doctor/scripts/doctor.py
+.opencode/skills/repo-guardrails/scripts/generate_agents_md.py
+.opencode/skills/worktree-janitor/scripts/janitor.py
+.opencode/skills/benchmark-runner/scripts/benchmark.py
+.opencode/skills/secret-preflight/scripts/preflight.py
+.opencode/skills/compat-matrix/scripts/compat_matrix.py  # + data/constraints.json
 tests/
 ├── fixtures/                    # capability and usage snapshots
 ├── test_toolkit.py              # selector and plan-validator tests
@@ -270,6 +342,7 @@ tests/
 evals/
 ├── run_skill_evals.py           # scenario + trigger runner and grader
 └── subagent-orchestrator/       # scenarios.json, triggers.json
+└── test_<skill>.py              # one test module per added skill
 docs/
 ├── requirements.md              # requirement-to-implementation mapping
 └── roadmap.md                   # other useful toolkit pieces
@@ -349,4 +422,4 @@ See [`docs/requirements.md`](docs/requirements.md) for the requirement-to-implem
 
 ## Status
 
-Three skills: subagent model/agent orchestration, project toolchain classification, and a read-only skill linter. The routing policy is a starter heuristic, not a benchmark. Adjust `data/routing-policy.json` to match your own quality and cost measurements, using the outcome ledger as evidence. The project classifier is conservative by design; low-confidence evidence is reported, not hidden.
+Eleven skills: subagent orchestration (with decision journal, verification harness, and multi-repo plans), project toolchain classification, a read-only skill linter, and operations skills for health checks, guardrails, worktree cleanup, benchmarking, secret preflight, model compatibility, DeepSeek off-peak scheduling, and session roles. All roadmap items 1–15 are implemented. The routing policy is a starter heuristic, not a benchmark. Adjust `data/routing-policy.json` to match your own quality and cost measurements, using the outcome ledger and benchmark runner as evidence. The project classifier is conservative by design; low-confidence evidence is reported, not hidden.

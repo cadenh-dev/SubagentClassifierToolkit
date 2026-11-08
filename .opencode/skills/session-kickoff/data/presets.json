@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "default": "planner",
+  "presets": [
+    {
+      "id": "planner",
+      "summary": "Main agent plans and reviews; delegates implementation and research.",
+      "main_agent": {"does": ["reason and plan", "write briefs", "review diffs", "merge accepted work", "fix small review findings"], "does_not": ["write feature code"]},
+      "delegation": {
+        "implementation": {"providerInstanceId": "codex", "model": "gpt-6-luna", "options": {"reasoningEffort": "high"}, "notes": "Coding implementation."},
+        "fix-up rounds": {"providerInstanceId": "codex", "model": "gpt-6-luna", "options": {"reasoningEffort": "xhigh"}, "notes": "Address review findings."},
+        "research": {"providerInstanceId": "antigravity", "model": "gemini-3.8-flash", "options": {}, "notes": "Research/web lookup only; never planning, decisions, or code."},
+        "review": {"providerInstanceId": "main", "model": "self", "options": {}, "notes": "Parent reviews delegated work."}
+      },
+      "policies": {"parent_codes": "small-fixes-only", "review_required": true, "acceptance_checklist": ["Every brief lists acceptance criteria and minimum test expectations.", "Parent reads diffs and rejects placeholder or tautological tests before merge.", "Verify with verify_unit.py and record_verification.py."], "offpeak_deepseek": "default", "ignore_cost": false, "on_provider_limit": "wait-and-reschedule", "provider_limit_notes": "If a delegate provider hits a usage limit, do not switch providers unasked: schedule a one-time retry after reset and tell the user the alternatives."}
+    },
+    {
+      "id": "builder", "summary": "Main agent implements; delegates independent parallel units or cross-provider review.",
+      "main_agent": {"does": ["plan and write code", "review and integrate work"], "does_not": []},
+      "delegation": {"independent parallel units": {"providerInstanceId": "", "model": "", "options": {}, "notes": "Use only when genuinely independent."}, "cross-provider review": {"providerInstanceId": "", "model": "", "options": {}, "notes": "Optional independent review."}},
+      "policies": {"parent_codes": "allowed", "review_required": false, "offpeak_deepseek": "default", "ignore_cost": false, "on_provider_limit": "wait-and-reschedule"}
+    },
+    {
+      "id": "reviewer", "summary": "Read and critique only; no edits or delegation unless asked.",
+      "main_agent": {"does": ["read and critique", "report findings"], "does_not": ["edit files", "delegate unless asked"]},
+      "delegation": {}, "policies": {"parent_codes": "never", "review_required": false, "offpeak_deepseek": "default", "ignore_cost": false, "on_provider_limit": "wait-and-reschedule"}
+    },
+    {
+      "id": "solo", "summary": "Main agent handles all work without delegation.",
+      "main_agent": {"does": ["plan, research, implement, review, and integrate"], "does_not": ["delegate"]},
+      "delegation": {}, "policies": {"parent_codes": "allowed", "review_required": false, "offpeak_deepseek": "default", "ignore_cost": false, "on_provider_limit": "wait-and-reschedule"}
+    }
+  ]
+}

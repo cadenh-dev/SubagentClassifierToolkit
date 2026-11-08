@@ -1,0 +1,6 @@
+{
+  "objective": "Add one benchmark result file",
+  "acceptance": ["The result file is committed"],
+  "commands": ["python3 -c \"print('benchmark command passed')\""],
+  "write_scope": ["src/**"]
+}

@@ -1,0 +1,1 @@
+This tracked fixture contains no credential-shaped value.
